@@ -1,0 +1,158 @@
+name: teleflow
+
+x-python-env: &python-env
+  DATABASE_URL: postgresql+asyncpg://teleflow:${POSTGRES_PASSWORD:-teleflow}@postgres:5432/teleflow
+  REDIS_URL: redis://redis:6379/0
+  RABBITMQ_URL: amqp://teleflow:${RABBITMQ_PASSWORD:-teleflow}@rabbitmq:5672/
+  TELEFLOW_API_KEY: ${TELEFLOW_API_KEY:-dev-key-change-me}
+  PARSER_URL: http://parser-service:8001
+  REGISTRY_URL: http://registry-service:8003
+  EXECUTOR_URL: http://executor-service:8002
+  COMPOSER_URL: http://composer-service:8004
+  GATEWAY_URL: http://api-gateway:8000
+  LLM_PROVIDER: ${LLM_PROVIDER:-stub}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  LLM_MODEL: ${LLM_MODEL:-}
+  LLM_BASE_URL: ${LLM_BASE_URL:-}
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-10}
+  TIMER_SCAN_INTERVAL: ${TIMER_SCAN_INTERVAL:-60}
+  RATE_LIMIT_RPM: ${RATE_LIMIT_RPM:-120}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: teleflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-teleflow}
+      POSTGRES_DB: teleflow
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U teleflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: teleflow
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-teleflow}
+    ports:
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  migrate:
+    build: .
+    command: alembic upgrade head
+    environment:
+      <<: *python-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  parser-service:
+    build: .
+    command: uvicorn teleflow.parser_service.main:app --host 0.0.0.0 --port 8001
+    environment:
+      <<: *python-env
+      SERVICE_NAME: parser-service
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  registry-service:
+    build: .
+    command: uvicorn teleflow.registry_service.main:app --host 0.0.0.0 --port 8003
+    environment:
+      <<: *python-env
+      SERVICE_NAME: registry-service
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  executor-service:
+    build: .
+    command: uvicorn teleflow.executor_service.main:app --host 0.0.0.0 --port 8002
+    environment:
+      <<: *python-env
+      SERVICE_NAME: executor-service
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  composer-service:
+    build: .
+    command: uvicorn teleflow.composer_service.main:app --host 0.0.0.0 --port 8004
+    environment:
+      <<: *python-env
+      SERVICE_NAME: composer-service
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  api-gateway:
+    build: .
+    command: uvicorn teleflow.gateway.main:app --host 0.0.0.0 --port 8000
+    environment:
+      <<: *python-env
+      SERVICE_NAME: api-gateway
+    ports:
+      - "8000:8000"
+    depends_on:
+      - parser-service
+      - registry-service
+      - executor-service
+      - composer-service
+
+  review-ui:
+    build: ./review-ui
+    ports:
+      - "3100:80"
+    depends_on:
+      - api-gateway
+
+# Prometheus y Grafana se construyen con la config horneada (COPY) en lugar
+# de bind mounts: las rutas con espacios rompen el file sharing en Windows.
+  prometheus:
+    build:
+      context: ./observability
+      dockerfile: prometheus.Dockerfile
+    ports:
+      - "9090:9090"
+
+  grafana:
+    build:
+      context: ./observability
+      dockerfile: grafana.Dockerfile
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafana-data:/var/lib/grafana
+    ports:
+      # host 3001 por defecto: 3000 suele estar ocupado (otro Grafana/WSL)
+      - "${GRAFANA_PORT:-3001}:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  pgdata:
+  grafana-data:

@@ -1,0 +1,73 @@
+image:
+  repository: registry.example.com/teleflow/teleflow
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+uiImage:
+  repository: registry.example.com/teleflow/review-ui
+  tag: "1.0.0"
+
+apiKeySecret: teleflow-secrets  # debe contener TELEFLOW_API_KEY y LLM_API_KEY
+
+env:
+  DATABASE_URL: postgresql+asyncpg://teleflow:teleflow@teleflow-postgresql:5432/teleflow
+  REDIS_URL: redis://teleflow-redis-master:6379/0
+  RABBITMQ_URL: amqp://teleflow:teleflow@teleflow-rabbitmq:5672/
+  PARSER_URL: http://parser-service:8001
+  REGISTRY_URL: http://registry-service:8003
+  EXECUTOR_URL: http://executor-service:8002
+  COMPOSER_URL: http://composer-service:8004
+  GATEWAY_URL: http://api-gateway:8000
+  LLM_PROVIDER: stub
+  WORKER_CONCURRENCY: "10"
+
+# Réplicas según sección 9.1 del documento de arquitectura
+services:
+  api-gateway:
+    port: 8000
+    replicas: 2
+    module: teleflow.gateway.main:app
+    external: true
+  parser-service:
+    port: 8001
+    replicas: 2
+    module: teleflow.parser_service.main:app
+  registry-service:
+    port: 8003
+    replicas: 2
+    module: teleflow.registry_service.main:app
+  executor-service:
+    port: 8002
+    replicas: 3
+    module: teleflow.executor_service.main:app
+  composer-service:
+    port: 8004
+    replicas: 1
+    module: teleflow.composer_service.main:app
+
+reviewUi:
+  enabled: true
+  port: 3100
+  replicas: 1
+
+migrations:
+  enabled: true  # Job alembic upgrade head (hook pre-install/pre-upgrade)
+
+postgresql:
+  enabled: true
+  auth:
+    username: teleflow
+    password: teleflow
+    database: teleflow
+
+redis:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: false
+
+rabbitmq:
+  enabled: true
+  auth:
+    username: teleflow
+    password: teleflow

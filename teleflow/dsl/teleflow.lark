@@ -1,0 +1,209 @@
+// =====================================================================
+// TeleFlow DSL v2 — gramática EBNF (Lark · LALR)
+// Fuente de verdad del lenguaje (ADR-001).
+// Cualquier extensión del DSL se hace primero en este archivo.
+// =====================================================================
+
+start: block*
+
+?block: entity_block
+      | relation_block
+      | rule_block
+      | view_block
+      | process_block
+      | step_block
+      | integration_block
+      | catalog_block
+      | party_block
+
+// ---------------------------------------------------------------- entity
+entity_block: "entity" STRING "{" entity_item* "}"
+?entity_item: description
+            | fields_block
+            | lifecycle_block
+            | events_block
+            | invariants_block
+
+description: "description" ":" STRING
+
+fields_block: "fields" "{" field_def* "}"
+field_def: NAME ":" field_type modifier*
+?field_type: "string"                        -> t_string
+           | "number"                        -> t_number
+           | "date"                          -> t_date
+           | "datetime"                      -> t_datetime
+           | "bool"                          -> t_bool
+           | "enum" "[" string_list "]"      -> t_enum
+?modifier: "required"                        -> m_required
+         | "optional"                        -> m_optional
+         | "unique"                          -> m_unique
+         | "default" "(" literal ")"         -> m_default
+         | "range" "(" NUMBER "," NUMBER ")" -> m_range
+
+lifecycle_block: "lifecycle" "{" "initial" ":" STRING "states" "[" string_list "]" transitions_block "}"
+transitions_block: "transitions" "{" transition* "}"
+transition: NAME "->" NAME "via" STRING
+
+events_block: "events" "{" event_decl* "}"
+?event_decl: "on_transition" STRING "emit" STRING   -> ev_transition
+           | "on_field_change" NAME "emit" STRING   -> ev_field_change
+           | "on_field_change" STRING "emit" STRING -> ev_field_change
+
+invariants_block: "invariants" "{" STRING* "}"
+
+// -------------------------------------------------------------- relation
+relation_block: "relation" STRING "{" relation_item* "}"
+?relation_item: description
+              | from_decl
+              | to_decl
+              | cardinality_decl
+              | constraint_decl
+              | lifecycle_block
+              | fields_block
+              | events_block
+from_decl: "from" ":" ref
+to_decl: "to" ":" ref
+cardinality_decl: "cardinality" ":" STRING
+constraint_decl: "constraint" ":" STRING
+
+// ------------------------------------------------------------------ rule
+rule_block: "rule" STRING "{" rule_item* "}"
+?rule_item: "on_event" ":" STRING    -> r_on_event
+          | "on_state" ":" STRING    -> r_on_state
+          | "on_relation" ":" STRING -> r_on_relation
+          | "condition" ":" expr     -> r_condition
+          | "execute" ":" ref        -> r_execute
+          | with_block
+          | on_timer_block
+on_timer_block: "on_timer" "{" "after" ":" duration "since" ":" STRING "condition" ":" expr "}"
+with_block: "with" "{" with_assign* "}"
+with_assign: NAME ":" expr
+
+duration: NUMBER time_unit
+?time_unit: "seconds" -> u_seconds
+          | "minutes" -> u_minutes
+          | "hours"   -> u_hours
+          | "days"    -> u_days
+          | "weeks"   -> u_weeks
+
+// --------------------------------------------------------------- view360
+view_block: "view360" STRING "{" view_item* "}"
+?view_item: view_entity_decl
+          | view_relations_block
+          | active_processes_block
+          | event_timeline_block
+          | alerts_block
+view_entity_decl: "entity" ":" ref
+view_relations_block: "relations" "{" view_relation* "}"
+view_relation: NAME ":" ref where_clause? include_clause?
+where_clause: "where" expr
+include_clause: "include" "[" ref_list "]"
+active_processes_block: "active_processes" "{" "include" ":" "[" ref_list "]" "filter" ":" expr "}"
+event_timeline_block: "event_timeline" "{" timeline_item* "}"
+?timeline_item: "events" ":" NAME  -> tl_events
+              | "limit" ":" NUMBER -> tl_limit
+              | "order" ":" STRING -> tl_order
+alerts_block: "alerts" "{" alert_ref* "}"
+alert_ref: "rule" ":" ref
+
+// --------------------------------------------------------------- process
+process_block: "process" STRING "{" process_item* "}"
+?process_item: description
+             | input_block
+             | stage_block
+             | on_complete_block
+input_block: "input" "{" field_def* "}"
+stage_block: "stage" STRING "{" "mode" ":" stage_mode steps_decl branch* "}"
+?stage_mode: "sequential" -> sm_sequential
+           | "parallel"   -> sm_parallel
+           | "decision"   -> sm_decision
+steps_decl: "steps" "[" ref_list? "]"
+?branch: "when" expr "->" ref -> branch_when
+       | "else" "->" ref      -> branch_else
+on_complete_block: "on_complete" "{" action* "}"
+?action: "emit" STRING                 -> act_emit
+       | "transition" ref "via" STRING -> act_transition
+
+// ------------------------------------------------------------------ step
+step_block: "step" STRING "{" step_item* "}"
+?step_item: description
+          | "type" ":" step_type          -> s_type
+          | "integration" ":" ref         -> s_integration
+          | "method" ":" STRING           -> s_method
+          | "path" ":" STRING             -> s_path
+          | payload_block
+          | "retries" ":" NUMBER          -> s_retries
+          | "timeout" ":" duration        -> s_timeout
+          | "assignee" ":" STRING         -> s_assignee
+          | "signals" "[" string_list "]" -> s_signals
+          | "channel" ":" STRING          -> s_channel
+          | "to" ":" expr                 -> s_to
+          | "template" ":" STRING         -> s_template
+          | "condition" ":" expr          -> s_condition
+          | on_complete_block
+?step_type: "automated"    -> st_automated
+          | "human_task"   -> st_human_task
+          | "decision"     -> st_decision
+          | "notification" -> st_notification
+payload_block: "payload" "{" with_assign* "}"
+
+// ----------------------------------------------------------- integration
+integration_block: "integration" STRING "{" integ_item* "}"
+?integ_item: NAME ":" literal      -> integ_kv
+           | "timeout" ":" literal -> integ_timeout
+
+// --------------------------------------------------------------- catalog
+catalog_block: "catalog" STRING "{" catalog_item* "}"
+?catalog_item: description
+             | product_block
+product_block: "product" STRING "{" product_item* "}"
+?product_item: description
+             | "instantiates" ":" ref -> p_instantiates
+             | "price" ":" NUMBER     -> p_price
+             | "currency" ":" STRING  -> p_currency
+
+// ----------------------------------------------------------------- party
+party_block: "party" STRING "{" party_item* "}"
+?party_item: description
+           | "role" ":" STRING -> pa_role
+           | "entity" ":" ref  -> pa_entity
+
+// ----------------------------------------------------------- expresiones
+?expr: when_test
+?when_test: or_test
+          | or_test "WHEN" or_test -> when_expr
+?or_test: and_test
+        | or_test "OR" and_test -> or_expr
+?and_test: not_test
+         | and_test "AND" not_test -> and_expr
+?not_test: "NOT" not_test -> not_expr
+         | comparison
+?comparison: operand
+           | operand COMP_OP operand -> cmp
+           | operand "in" operand    -> in_cmp
+?operand: literal
+        | list_lit
+        | func_call
+        | ref
+        | "(" expr ")"
+list_lit: "[" (literal ("," literal)*)? "]"
+func_call: NAME "(" (expr ("," expr)*)? ")"
+ref: NAME ("." NAME)*
+
+string_list: STRING ("," STRING)*
+ref_list: ref ("," ref)*
+?literal: STRING  -> lit_string
+        | NUMBER  -> lit_number
+        | "true"  -> lit_true
+        | "false" -> lit_false
+        | "null"  -> lit_null
+
+COMP_OP: "==" | "!=" | ">=" | "<=" | ">" | "<"
+NAME: /[a-zA-Z_][a-zA-Z0-9_]*/
+NUMBER: /-?\d+(\.\d+)?/
+STRING: /"(\\.|[^"\\])*"/
+
+COMMENT: /\/\/[^\n]*/ | /#[^\n]*/
+%import common.WS
+%ignore WS
+%ignore COMMENT

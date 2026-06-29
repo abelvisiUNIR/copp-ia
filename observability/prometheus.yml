@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: teleflow
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - api-gateway:8000
+          - parser-service:8001
+          - executor-service:8002
+          - registry-service:8003
+          - composer-service:8004
+        labels:
+          platform: teleflow

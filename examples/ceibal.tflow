@@ -1,0 +1,412 @@
+// =====================================================================
+// Dominio Ceibal — ejemplo completo del documento de arquitectura v1.0
+// Entidades, relación, reglas event-driven, procesos, steps y vista 360.
+// Deploy:  tflow deploy examples/ceibal.tflow --name ceibal --version 1.0.0
+// =====================================================================
+
+entity "nino" {
+  description: "Estudiante registrado en Ceibal"
+
+  fields {
+    ci:           string   required unique
+    nombre:       string   required
+    fecha_nac:    date     required
+    departamento: string
+    nivel:        enum["primaria", "secundaria", "utu"]
+    dispositivo:  string   optional
+    tutor_email:  string   optional
+  }
+
+  lifecycle {
+    initial: "REGISTRADO"
+    states ["REGISTRADO", "ACTIVO", "INSCRIPTO", "GRADUADO", "INACTIVO"]
+
+    transitions {
+      REGISTRADO -> ACTIVO     via "activar"
+      ACTIVO     -> INSCRIPTO  via "inscribir"
+      INSCRIPTO  -> ACTIVO     via "desinscribir"
+      ACTIVO     -> GRADUADO   via "graduar"
+      ACTIVO     -> INACTIVO   via "desactivar"
+      INACTIVO   -> ACTIVO     via "reactivar"
+    }
+  }
+
+  events {
+    on_transition "activar"      emit "nino.activado"
+    on_transition "inscribir"    emit "nino.inscripto"
+    on_transition "graduar"      emit "nino.graduado"
+    on_field_change "nivel"      emit "nino.nivel_cambiado"
+  }
+
+  invariants {
+    "edad >= 5 AND edad <= 18"
+    "nivel != null WHEN estado == INSCRIPTO"
+  }
+}
+
+entity "curso" {
+  description: "Curso ofrecido en la plataforma Ceibal"
+
+  fields {
+    nombre:   string required
+    area:     enum["robotica", "matematica", "lengua", "ciencias"]
+    cupo:     number default(30) range(1, 500)
+    docente:  string optional
+  }
+
+  lifecycle {
+    initial: "BORRADOR"
+    states ["BORRADOR", "DISPONIBLE", "CERRADO"]
+    transitions {
+      BORRADOR   -> DISPONIBLE via "publicar"
+      DISPONIBLE -> CERRADO    via "cerrar"
+    }
+  }
+
+  events {
+    on_transition "publicar" emit "curso.disponible"
+    on_transition "cerrar"   emit "curso.cerrado"
+  }
+}
+
+relation "inscripcion" {
+  description: "Vínculo entre un niño y un curso activo"
+
+  from: entity.nino
+  to:   entity.curso
+  cardinality: "many_to_many"
+  constraint:  "nino puede estar en max 3 cursos simultaneos"
+
+  lifecycle {
+    initial: "PENDIENTE"
+    states ["PENDIENTE", "ACTIVA", "COMPLETADA", "ABANDONADA"]
+    transitions {
+      PENDIENTE -> ACTIVA      via "activar"
+      ACTIVA    -> COMPLETADA  via "completar"
+      ACTIVA    -> ABANDONADA  via "abandonar"
+    }
+  }
+
+  fields {
+    fecha_inscripcion: date      required
+    modalidad:         enum["presencial", "virtual"]
+    progreso:          number    default(0) range(0, 100)
+    ultimo_acceso:     datetime  optional
+  }
+
+  events {
+    on_transition "activar"     emit "inscripcion.activada"
+    on_transition "completar"   emit "inscripcion.completada"
+    on_transition "abandonar"   emit "inscripcion.abandonada"
+    on_field_change "progreso"  emit "inscripcion.progreso_actualizado"
+  }
+}
+
+// ------------------------------------------------------------- reglas
+
+// Regla simple: evento dispara proceso
+rule "activar_acceso_al_inscribirse" {
+  on_event: "inscripcion.activada"
+  execute:  process.activacion_acceso_plataforma
+  with {
+    nino_id:  event.from_id
+    curso_id: event.to_id
+  }
+}
+
+// Regla con condición sobre campos del objeto
+rule "prioridad_dispositivo" {
+  on_event:  "nino.activado"
+  condition: event.entity.dispositivo == null
+  execute:   process.asignacion_dispositivo
+  with {
+    nino_id: event.entity_id
+  }
+}
+
+// Regla temporal: si la condición persiste N días
+rule "detectar_abandono" {
+  on_timer {
+    after:     30 days
+    since:     "inscripcion.activada"
+    condition: days_since(relation.inscripcion.ultimo_acceso) >= 30
+               OR relation.inscripcion.ultimo_acceso == null
+  }
+  execute: process.reenganche_estudiante
+  with {
+    nino_id:  relation.from_id
+    curso_id: relation.to_id
+  }
+}
+
+// Regla sobre completar un curso
+rule "emitir_certificado_al_completar" {
+  on_event:  "inscripcion.completada"
+  condition: relation.inscripcion.progreso >= 80
+  execute:   process.emision_certificado
+  with {
+    nino_id:  event.from_id
+    curso_id: event.to_id
+  }
+}
+
+// Oferta: al publicarse un curso se notifica a los elegibles
+rule "notificar_oferta" {
+  on_event: "curso.disponible"
+  execute:  process.notificacion_oferta_curso
+  with {
+    curso_id: event.entity_id
+  }
+}
+
+// ----------------------------------------------------------- vista 360
+
+view360 "nino" {
+  entity: entity.nino
+
+  relations {
+    inscripciones_activas: relation.inscripcion
+      where estado == "ACTIVA"
+      include [curso.nombre, progreso, ultimo_acceso]
+
+    historial_cursos: relation.inscripcion
+      where estado in ["COMPLETADA", "ABANDONADA"]
+      include [curso.nombre, fecha_inscripcion, estado]
+  }
+
+  active_processes {
+    include: [
+      process.activacion_acceso_plataforma,
+      process.reenganche_estudiante,
+      process.emision_certificado,
+      process.asignacion_dispositivo
+    ]
+    filter: instance.payload.nino_id == entity.id
+  }
+
+  event_timeline {
+    events: all
+    limit:  50
+    order:  "desc"
+  }
+
+  alerts {
+    rule: rule.detectar_abandono
+    rule: rule.prioridad_dispositivo
+  }
+}
+
+// ------------------------------------------------------------ procesos
+
+process "activacion_acceso_plataforma" {
+  description: "Asigna credenciales LMS al inscribirse a un curso"
+
+  input {
+    nino_id:  string required
+    curso_id: string required
+  }
+
+  stage "alta" {
+    mode: sequential
+    steps [step.crear_credenciales_lms, step.notificar_acceso]
+  }
+
+  on_complete {
+    emit "acceso.activado"
+  }
+}
+
+process "asignacion_dispositivo" {
+  description: "Verifica stock y asigna dispositivo XO al estudiante"
+
+  input {
+    nino_id: string required
+  }
+
+  stage "verificacion" {
+    mode: sequential
+    steps [step.verificar_stock]
+  }
+
+  stage "entrega" {
+    mode: sequential
+    steps [step.reservar_dispositivo, step.notificar_entrega]
+  }
+
+  on_complete {
+    emit "dispositivo.asignado"
+  }
+}
+
+process "reenganche_estudiante" {
+  description: "Reactivación de estudiantes con 30 días sin acceso"
+
+  input {
+    nino_id:  string required
+    curso_id: string required
+  }
+
+  stage "contacto" {
+    mode: parallel
+    steps [step.notificar_tutor_abandono, step.recordatorio_estudiante]
+  }
+
+  on_complete {
+    emit "reenganche.ejecutado"
+  }
+}
+
+process "emision_certificado" {
+  description: "Genera y notifica el certificado de curso completado"
+
+  input {
+    nino_id:  string required
+    curso_id: string required
+  }
+
+  stage "emision" {
+    mode: sequential
+    steps [step.generar_certificado, step.notificar_certificado]
+  }
+
+  on_complete {
+    emit "certificado.emitido"
+  }
+}
+
+process "notificacion_oferta_curso" {
+  description: "Notifica un curso nuevo a los alumnos elegibles"
+
+  input {
+    curso_id: string required
+  }
+
+  stage "difusion" {
+    mode: sequential
+    steps [step.notificar_oferta]
+  }
+
+  on_complete {
+    emit "oferta.notificada"
+  }
+}
+
+// --------------------------------------------------------------- steps
+
+step "crear_credenciales_lms" {
+  description: "Alta de credenciales en el LMS"
+  type: automated
+  integration: integration.lms
+  method: "POST"
+  path: "/api/credentials"
+  retries: 3
+  timeout: 30 seconds
+  payload {
+    nino_id:  payload.nino_id
+    curso_id: payload.curso_id
+  }
+}
+
+step "notificar_acceso" {
+  type: notification
+  channel: "email"
+  to: payload.nino_id
+  template: "Tu acceso al curso fue activado. Usuario: {payload.nino_id}"
+}
+
+step "verificar_stock" {
+  description: "Consulta stock de dispositivos en depósito"
+  type: automated
+  retries: 2
+}
+
+step "reservar_dispositivo" {
+  type: automated
+  retries: 3
+}
+
+step "notificar_entrega" {
+  type: notification
+  channel: "sms"
+  to: payload.nino_id
+  template: "Tu dispositivo está reservado para retiro."
+}
+
+step "notificar_tutor_abandono" {
+  type: notification
+  channel: "email"
+  to: payload.nino_id
+  template: "Detectamos 30 días sin acceso al curso. ¿Necesitan ayuda?"
+}
+
+step "recordatorio_estudiante" {
+  type: notification
+  channel: "sms"
+  to: payload.nino_id
+  template: "¡Te extrañamos en el curso! Entrá para no perder tu progreso."
+}
+
+step "generar_certificado" {
+  type: automated
+  integration: integration.lms
+  method: "POST"
+  path: "/api/certificates"
+  retries: 3
+  payload {
+    nino_id:  payload.nino_id
+    curso_id: payload.curso_id
+  }
+}
+
+step "notificar_certificado" {
+  type: notification
+  channel: "email"
+  to: payload.nino_id
+  template: "¡Felicitaciones! Tu certificado ya está disponible."
+}
+
+step "notificar_oferta" {
+  type: notification
+  channel: "email"
+  to: payload.curso_id
+  template: "Nuevo curso disponible en Ceibal: inscribite desde la plataforma."
+}
+
+// --------------------------------------------------------- integraciones
+
+integration "lms" {
+  type: "rest"
+  base_url: "${env.LMS_URL}"
+  auth_header: "${env.LMS_TOKEN}"
+  timeout: 30
+}
+
+integration "email_ceibal" {
+  type: "smtp"
+  host: "${env.SMTP_HOST}"
+  port: 587
+  from_address: "plataforma@ceibal.edu.uy"
+  username: "${env.SMTP_USER}"
+  password: "${env.SMTP_PASS}"
+}
+
+// ----------------------------------------------------- catálogo y actores
+
+catalog "cursos_ceibal" {
+  description: "Cursos ofertables de la plataforma"
+
+  product "robotica_basica" {
+    description: "Curso introductorio de robótica"
+    instantiates: entity.curso
+  }
+
+  product "matematica_digital" {
+    instantiates: entity.curso
+  }
+}
+
+party "tutor" {
+  description: "Adulto responsable del estudiante"
+  role: "responsable"
+  entity: entity.nino
+}

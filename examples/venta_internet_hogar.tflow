@@ -1,0 +1,94 @@
+// =====================================================================
+// Venta de internet hogar — demuestra human_task con durable sleep
+// y stage decision con branches.
+// La instancia duerme en WAITING_SIGNAL (días o semanas) hasta que un
+// gerente envía POST /instances/{id}/signal con approve | reject.
+// =====================================================================
+
+process "venta_internet_hogar" {
+  description: "Proceso de venta con validación, aprobación gerencial y activación"
+
+  input {
+    cliente_id: string required
+    producto:   string required
+    direccion:  string optional
+  }
+
+  stage "validacion" {
+    mode: sequential
+    steps [step.validar_identidad, step.verificar_cobertura]
+  }
+
+  stage "aprobacion" {
+    mode: sequential
+    steps [step.aprobacion_gerencia]
+  }
+
+  stage "decidir" {
+    mode: decision
+    steps []
+    when signals.aprobacion_gerencia.signal == "approve" -> stage.activacion
+    else -> stage.rechazo
+  }
+
+  stage "activacion" {
+    mode: sequential
+    steps [step.activar_servicio, step.notificar_alta]
+  }
+
+  stage "fin_ok" {
+    mode: decision
+    steps []
+    else -> stage.end
+  }
+
+  stage "rechazo" {
+    mode: sequential
+    steps [step.notificar_rechazo]
+  }
+
+  on_complete {
+    emit "venta_internet_hogar.finalizada"
+  }
+}
+
+step "validar_identidad" {
+  description: "Valida identidad del cliente contra el padrón"
+  type: automated
+  retries: 3
+  timeout: 30 seconds
+}
+
+step "verificar_cobertura" {
+  description: "Chequea factibilidad técnica en la dirección"
+  type: automated
+  retries: 2
+}
+
+step "aprobacion_gerencia" {
+  description: "Aprobación manual para ventas que requieren visto bueno"
+  type: human_task
+  assignee: "rol:gerente_comercial"
+  signals ["approve", "reject"]
+  timeout: 7 days
+}
+
+step "activar_servicio" {
+  description: "Provisión del servicio en la red"
+  type: automated
+  retries: 5
+}
+
+step "notificar_alta" {
+  type: notification
+  channel: "email"
+  to: payload.cliente_id
+  template: "Tu servicio de internet hogar fue activado. ¡Bienvenido!"
+}
+
+step "notificar_rechazo" {
+  type: notification
+  channel: "email"
+  to: payload.cliente_id
+  template: "Tu solicitud no pudo ser aprobada. Un asesor te contactará."
+}

@@ -1,0 +1,65 @@
+{{- range $name, $svc := .Values.services }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    app: {{ $name }}
+    {{- include "teleflow.labels" $ | nindent 4 }}
+spec:
+  replicas: {{ $svc.replicas }}
+  selector:
+    matchLabels:
+      app: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app: {{ $name }}
+        {{- include "teleflow.labels" $ | nindent 8 }}
+    spec:
+      containers:
+        - name: {{ $name }}
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: ["uvicorn", "{{ $svc.module }}", "--host", "0.0.0.0", "--port", "{{ $svc.port }}"]
+          ports:
+            - containerPort: {{ $svc.port }}
+          env:
+            {{- include "teleflow.env" $ | nindent 12 }}
+            - name: SERVICE_NAME
+              value: {{ $name }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ $svc.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: {{ $svc.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    app: {{ $name }}
+    {{- include "teleflow.labels" $ | nindent 4 }}
+spec:
+  type: {{ if $svc.external }}LoadBalancer{{ else }}ClusterIP{{ end }}
+  selector:
+    app: {{ $name }}
+  ports:
+    - port: {{ $svc.port }}
+      targetPort: {{ $svc.port }}
+{{- end }}

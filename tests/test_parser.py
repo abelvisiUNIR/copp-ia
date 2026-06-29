@@ -1,0 +1,118 @@
+"""Tests del parser DSL v2 contra los ejemplos del documento de arquitectura."""
+import pytest
+
+from teleflow.dsl.parser import TeleFlowSyntaxError
+from teleflow.dsl.serialize import to_jsonable
+from teleflow.dsl.validator import validate_flow
+
+
+def test_parse_ceibal_blocks(parser, ceibal_source):
+    flow = parser.parse(ceibal_source)
+    assert set(flow.entities) == {"nino", "curso"}
+    assert set(flow.relations) == {"inscripcion"}
+    assert len(flow.rules) == 5
+    assert "nino" in flow.views
+    assert len(flow.processes) == 5
+    assert "lms" in flow.integrations
+    assert "cursos_ceibal" in flow.catalogs
+    assert "tutor" in flow.parties
+
+
+def test_entity_nino_lifecycle(parser, ceibal_source):
+    flow = parser.parse(ceibal_source)
+    nino = flow.entities["nino"]
+    assert nino.lifecycle.initial == "REGISTRADO"
+    assert set(nino.lifecycle.states) == {
+        "REGISTRADO", "ACTIVO", "INSCRIPTO", "GRADUADO", "INACTIVO"}
+    vias = {t.via for t in nino.lifecycle.transitions}
+    assert {"activar", "inscribir", "graduar"} <= vias
+    assert len(nino.invariants) == 2
+    emits = {e.emit for e in nino.events}
+    assert "nino.inscripto" in emits
+
+
+def test_entity_fields(parser, ceibal_source):
+    flow = parser.parse(ceibal_source)
+    fields = flow.entities["nino"].field_map()
+    assert fields["ci"].required and fields["ci"].unique
+    assert fields["nivel"].type == "enum"
+    assert fields["nivel"].enum_values == ["primaria", "secundaria", "utu"]
+    assert fields["dispositivo"].optional
+
+    progreso = flow.relations["inscripcion"].fields[2]
+    assert progreso.name == "progreso"
+    assert progreso.has_default and progreso.default == 0
+    assert progreso.range == (0.0, 100.0)
+
+
+def test_relation_refs(parser, ceibal_source):
+    flow = parser.parse(ceibal_source)
+    rel = flow.relations["inscripcion"]
+    assert rel.from_ref.dotted == "entity.nino"
+    assert rel.to_ref.dotted == "entity.curso"
+    assert rel.cardinality == "many_to_many"
+
+
+def test_timer_rule(parser, ceibal_source):
+    flow = parser.parse(ceibal_source)
+    rule = flow.rules["detectar_abandono"]
+    assert rule.timer is not None
+    assert rule.timer.after_seconds == 30 * 86400
+    assert rule.timer.since == "inscripcion.activada"
+    assert rule.execute.dotted == "process.reenganche_estudiante"
+    assert set(rule.with_map) == {"nino_id", "curso_id"}
+
+
+def test_view360(parser, ceibal_source):
+    flow = parser.parse(ceibal_source)
+    view = flow.views["nino"]
+    assert view.entity.dotted == "entity.nino"
+    assert len(view.relations) == 2
+    activas = view.relations[0]
+    assert activas.alias == "inscripciones_activas"
+    assert activas.where is not None
+    assert [r.dotted for r in activas.include] == [
+        "curso.nombre", "progreso", "ultimo_acceso"]
+    assert view.timeline.limit == 50
+    assert len(view.alerts) == 2
+    assert len(view.active_processes.include) == 4
+
+
+def test_validation_clean(parser, ceibal_source):
+    flow = parser.parse(ceibal_source)
+    issues = validate_flow(flow)
+    errors = [i for i in issues if i.level == "error"]
+    assert errors == []
+
+
+def test_venta_decision_stages(parser, venta_source):
+    flow = parser.parse(venta_source)
+    proc = flow.processes["venta_internet_hogar"]
+    assert [s.name for s in proc.stages] == [
+        "validacion", "aprobacion", "decidir", "activacion", "fin_ok", "rechazo"]
+    decidir = proc.stages[2]
+    assert decidir.mode == "decision"
+    assert len(decidir.branches) == 2
+    assert decidir.branches[0].target.target == "activacion"
+    assert decidir.branches[1].condition is None  # else
+    human = flow.steps["aprobacion_gerencia"]
+    assert human.type == "human_task"
+    assert human.signals == ["approve", "reject"]
+    assert human.timeout_seconds == 7 * 86400
+    issues = validate_flow(flow)
+    assert [i for i in issues if i.level == "error"] == []
+
+
+def test_syntax_error_reports_line(parser):
+    with pytest.raises(TeleFlowSyntaxError) as exc:
+        parser.parse('entity "x" { lifecycle { ??? } }')
+    assert exc.value.line is not None
+
+
+def test_ast_serializable(parser, ceibal_source):
+    import json
+
+    flow = parser.parse(ceibal_source)
+    data = to_jsonable(flow)
+    text = json.dumps(data)
+    assert '"_node": "EntityDef"' in text
