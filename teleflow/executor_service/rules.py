@@ -38,8 +38,8 @@ class RuleEngine:
         self._bus = event_bus
         self._engine = engine
         self._settings = settings
-        self._consumer_task: asyncio.Task | None = None
-        self._timer_task: asyncio.Task | None = None
+        self._consumer_task: asyncio.Task[Any] | None = None
+        self._timer_task: asyncio.Task[Any] | None = None
 
     async def start(self) -> None:
         self._consumer_task = asyncio.create_task(self._consume_forever())
@@ -119,26 +119,28 @@ class RuleEngine:
 
         async with self._sessionmaker() as session:
             if message.get("subject_kind") == "entity" and message.get("entity_id"):
-                row = await session.scalar(select(EntityState).where(
+                entity_row = await session.scalar(select(EntityState).where(
                     EntityState.entity_type == subject,
                     EntityState.entity_id == str(message["entity_id"])))
-                if row is not None:
-                    snapshot = {**row.campos, "estado": row.estado, "id": row.entity_id}
+                if entity_row is not None:
+                    snapshot = {**entity_row.campos, "estado": entity_row.estado,
+                                "id": entity_row.entity_id}
                     event_ctx["entity"] = snapshot
                     ctx["entity"] = {subject: snapshot, **snapshot}
             if message.get("subject_kind") == "relation" and message.get("relation_id"):
+                relation_row: RelationState | None
                 try:
                     rid = uuid.UUID(str(message["relation_id"]))
-                    row = await session.get(RelationState, rid)
+                    relation_row = await session.get(RelationState, rid)
                 except ValueError:
-                    row = None
-                if row is not None:
-                    snapshot = {**row.campos, "estado": row.estado,
-                                "from_id": row.from_id, "to_id": row.to_id,
-                                "id": str(row.id)}
+                    relation_row = None
+                if relation_row is not None:
+                    snapshot = {**relation_row.campos, "estado": relation_row.estado,
+                                "from_id": relation_row.from_id, "to_id": relation_row.to_id,
+                                "id": str(relation_row.id)}
                     event_ctx["relation"] = snapshot
-                    event_ctx.setdefault("from_id", row.from_id)
-                    event_ctx.setdefault("to_id", row.to_id)
+                    event_ctx.setdefault("from_id", relation_row.from_id)
+                    event_ctx.setdefault("to_id", relation_row.to_id)
                     ctx["relation"] = {subject: snapshot, **snapshot}
         return ctx
 

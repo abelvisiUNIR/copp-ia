@@ -65,7 +65,7 @@ class TeleFlowParser:
                 line=getattr(exc, "line", None),
                 column=getattr(exc, "column", None),
             ) from exc
-        result = self._transformer.transform(tree)
+        result: ExprValue = self._transformer.transform(tree)
         return result  # puede ser Expr o un literal Python
 
 

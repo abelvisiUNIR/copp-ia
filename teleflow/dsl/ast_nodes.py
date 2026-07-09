@@ -10,7 +10,7 @@ from typing import Any, Union
 
 # ----------------------------------------------------------- expresiones
 
-ExprValue = Union[str, int, float, bool, None, list, "Expr"]
+ExprValue = Union[str, int, float, bool, None, "list[Any]", "Expr"]
 
 
 @dataclass

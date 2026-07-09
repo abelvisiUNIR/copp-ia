@@ -3,8 +3,10 @@
 Una versión registrada nunca cambia. `latest` es un pointer mutable
 en flow_latest que avanza al registrar una versión mayor (semver).
 """
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
+from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -21,7 +23,7 @@ log = setup_logging("registry-service")
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_db(get_settings())
     yield
     await dispose_db()
@@ -35,7 +37,7 @@ class RegisterRequest(BaseModel):
     source: str
     version: str
     description: str = ""
-    ast: dict = Field(default_factory=dict)
+    ast: dict[str, Any] = Field(default_factory=dict)
     checksum: str = ""
 
 
@@ -47,7 +49,7 @@ class FlowOut(BaseModel):
     created_at: datetime | None = None
 
 
-def _semver_key(version: str) -> tuple:
+def _semver_key(version: str) -> tuple[int, ...]:
     parts = []
     for chunk in version.split("."):
         digits = "".join(ch for ch in chunk if ch.isdigit())
@@ -94,7 +96,7 @@ async def register_flow(
 
 
 @app.get("/flows")
-async def list_flows(session: AsyncSession = Depends(get_session)) -> list[dict]:
+async def list_flows(session: AsyncSession = Depends(get_session)) -> list[dict[str, Any]]:
     rows = (await session.execute(select(FlowLatest))).scalars().all()
     return [
         {"name": r.name, "latest": r.version, "updated_at": r.updated_at.isoformat()}
@@ -105,7 +107,7 @@ async def list_flows(session: AsyncSession = Depends(get_session)) -> list[dict]
 @app.get("/flows/{name}")
 async def list_versions(
     name: str, session: AsyncSession = Depends(get_session)
-) -> dict:
+) -> dict[str, Any]:
     rows = (
         (await session.execute(
             select(FlowDefinition).where(FlowDefinition.name == name)
@@ -129,7 +131,7 @@ async def list_versions(
 @app.get("/flows/{name}/{version}")
 async def get_flow(
     name: str, version: str, session: AsyncSession = Depends(get_session)
-) -> dict:
+) -> dict[str, Any]:
     if version == "latest":
         latest = await session.get(FlowLatest, name)
         if latest is None:
