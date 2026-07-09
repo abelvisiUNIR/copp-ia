@@ -7,6 +7,7 @@ Deploy de un flow: POST /flows/{name}
   gateway → parser-service (valida) → registry-service (persiste)
 """
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -27,7 +28,7 @@ client: httpx.AsyncClient | None = None
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global client
     client = httpx.AsyncClient(timeout=60.0)
     yield

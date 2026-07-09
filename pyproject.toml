@@ -48,3 +48,9 @@ testpaths = ["tests"]
 [tool.mypy]
 strict = true
 python_version = "3.11"
+
+# networkx no publica tipos compatibles con py3.11 (sus stubs arrastran numpy
+# con sintaxis 3.12). Se trata como sin-tipos; el uso local es acotado.
+[[tool.mypy.overrides]]
+module = "networkx.*"
+ignore_missing_imports = true

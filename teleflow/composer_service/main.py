@@ -8,6 +8,7 @@ Flujo PR-style:
   POST /drafts/{id}/reject  — rechaza con comentario
 """
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -28,7 +29,7 @@ log = setup_logging("composer-service")
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_db(get_settings())
     yield
     await dispose_db()
@@ -76,7 +77,7 @@ async def compose(req: ComposeRequest,
 
 @app.get("/drafts")
 async def list_drafts(status: str | None = None,
-                      session: AsyncSession = Depends(get_session)) -> list[dict]:
+                      session: AsyncSession = Depends(get_session)) -> list[dict[str, Any]]:
     query = select(FlowDraft).order_by(FlowDraft.created_at.desc())
     if status:
         query = query.where(FlowDraft.status == status)

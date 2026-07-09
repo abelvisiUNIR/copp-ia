@@ -75,8 +75,8 @@ class ExecutionEngine:
         self._settings = settings
         self._redis: aioredis.Redis | None = None
         self._semaphore = asyncio.Semaphore(settings.worker_concurrency)
-        self._tasks: set[asyncio.Task] = set()
-        self._listener_task: asyncio.Task | None = None
+        self._tasks: set[asyncio.Task[Any]] = set()
+        self._listener_task: asyncio.Task[Any] | None = None
         self._stopping = False
 
     # ----------------------------------------------------------- lifecycle
@@ -100,7 +100,7 @@ class ExecutionEngine:
         self._tasks.add(task)
         task.add_done_callback(self._on_task_done)
 
-    def _on_task_done(self, task: asyncio.Task) -> None:
+    def _on_task_done(self, task: asyncio.Task[Any]) -> None:
         self._tasks.discard(task)
         if task.cancelled():
             return
@@ -168,7 +168,9 @@ class ExecutionEngine:
         self._spawn(self._drive(instance_id))
         return {"instance_id": str(instance_id), "status": "TRIGGERED"}
 
-    async def _resolve_process(self, flow_name: str, version: str):
+    async def _resolve_process(
+        self, flow_name: str, version: str
+    ) -> tuple[ProcessDef, str, str] | None:
         if version in ("", "latest"):
             return await self._domain.find_process(flow_name)
         # versión explícita: buscar el flow registrado y el proceso dentro
@@ -303,7 +305,7 @@ class ExecutionEngine:
 
     # ---------------------------------------------------------------- steps
 
-    async def _run_step(self, step: StepDef, integrations: dict, ctx: dict[str, Any],
+    async def _run_step(self, step: StepDef, integrations: dict[str, Any], ctx: dict[str, Any],
                         flow_name: str) -> dict[str, Any]:
         integration = (integrations.get(step.integration.target)
                        if step.integration else None)
@@ -342,7 +344,7 @@ class ExecutionEngine:
     async def _apply_step_actions(self, step: StepDef, ctx: dict[str, Any]) -> None:
         await self._apply_actions(step.name, step.on_complete, ctx)
 
-    async def _apply_actions(self, origin: str, actions: list, ctx: dict[str, Any]) -> None:
+    async def _apply_actions(self, origin: str, actions: list[Any], ctx: dict[str, Any]) -> None:
         payload = ctx.get("payload", {})
         for action in actions:
             if action.kind == "emit":
@@ -455,7 +457,7 @@ class ExecutionEngine:
                 except Exception as exc:
                     log.error("signal_listener_message_error", error=repr(exc))
         finally:
-            await pubsub.aclose()
+            await pubsub.aclose()  # type: ignore[no-untyped-call]
 
     async def _apply_signals_and_resume(self, instance_id: uuid.UUID) -> None:
         async with self._sessionmaker() as session:

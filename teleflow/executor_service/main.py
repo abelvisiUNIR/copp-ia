@@ -10,10 +10,12 @@ Endpoints:
   GET  /entities/{type}/{id}/360         — vista 360
 """
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,7 +39,7 @@ state: dict[str, Any] = {}
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     sessionmaker = init_db(settings)
     domain_loader = DomainLoader(sessionmaker, get_parser(),
@@ -71,9 +73,7 @@ setup_observability(app, "executor-service", ready_check=db_ping)
 
 
 @app.exception_handler(DomainError)
-async def domain_error_handler(request: Request, exc: DomainError):
-    from fastapi.responses import JSONResponse
-
+async def domain_error_handler(request: Request, exc: DomainError) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
 
 

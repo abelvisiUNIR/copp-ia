@@ -15,7 +15,13 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from teleflow.common.logging import get_logger
 from teleflow.common.models import EntityEvent, EntityState, RelationState
-from teleflow.dsl.ast_nodes import EntityDef, FieldDef, Lifecycle, RelationDef
+from teleflow.dsl.ast_nodes import (
+    EntityDef,
+    FieldDef,
+    Lifecycle,
+    RelationDef,
+    TransitionDef,
+)
 from teleflow.dsl.evaluator import evaluate
 from teleflow.executor_service.domain import DomainLoader
 from teleflow.executor_service.events import EventBus
@@ -62,7 +68,7 @@ def _validate_fields(defs: list[FieldDef], data: dict[str, Any],
     return result
 
 
-def _find_transition(lc: Lifecycle | None, current: str, via: str):
+def _find_transition(lc: Lifecycle | None, current: str, via: str) -> TransitionDef:
     if lc is None:
         raise DomainError("El tipo no declara lifecycle", 409)
     for t in lc.transitions:
@@ -77,7 +83,7 @@ def _eval_ctx(campos: dict[str, Any], estado: str) -> dict[str, Any]:
     ctx = {**campos, "estado": estado}
     # Campo derivado: edad desde fecha_nac (invariantes tipo "edad >= 5")
     if "fecha_nac" in campos and campos.get("fecha_nac"):
-        from teleflow.dsl.evaluator import _years_since  # type: ignore[attr-defined]
+        from teleflow.dsl.evaluator import _years_since
 
         years = _years_since(campos["fecha_nac"])
         if years is not None:
