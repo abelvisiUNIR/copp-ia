@@ -2,6 +2,8 @@
 
 Entradas breves con timestamp, agregadas por `/checkpoint`. Más reciente arriba.
 
+- 2026-07-09: creada rama personal `devyos` desde `desarrollo`; merge `--no-ff` de `chore/mypy-strict-clean` (`eaef97d`), `.claude/` agregado a `.gitignore` (`f64ed98`), y wiki commiteada (`9945ae1`). Local, sin push.
+
 - 2026-07-09: **cerrado** work-stream [[saneamiento-mypy-strict]] (`status: completed`) — objetivo cumplido, commit local `13f2907`.
 - 2026-07-09: [[saneamiento-mypy-strict]] — `mypy --strict` **236 → 0** (16 archivos + override networkx en pyproject); pytest 26/26. Pendiente de commit.
 - 2026-07-09: abierto work-stream [[saneamiento-mypy-strict]] — llevar `mypy --strict` a 0 (hoy 236 errores). Derivado del onboarding.
