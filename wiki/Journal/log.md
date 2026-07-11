@@ -2,6 +2,11 @@
 
 Entradas breves con timestamp, agregadas por `/checkpoint`. Más reciente arriba.
 
+- 2026-07-11: **Fase A CERRADA** — flujos e2e documentados ([[flujos-negocio]]); work-stream [[fase-a-flujos-e2e]] completado. Docs por módulo diferidas on-demand a Fase C. Próximo: Fase B (CI).
+- 2026-07-11: Fase A — corridos los 2 flujos e2e en vivo (durable sleep + event-driven Ceibal/360); guía [[flujos-negocio]]. Work-stream [[fase-a-flujos-e2e]].
+
+- 2026-07-10: creado [[roadmap]] — guía de desarrollo por fases (A entender · B CI · C calidad · D mejoras · E producción). Objetivo del owner: aprender + endurecer + proponer mejoras + luego producción.
+
 - 2026-07-09: creada rama personal `devyos` desde `desarrollo`; merge `--no-ff` de `chore/mypy-strict-clean` (`eaef97d`), `.claude/` agregado a `.gitignore` (`f64ed98`), y wiki commiteada (`9945ae1`). Local, sin push.
 
 - 2026-07-09: **cerrado** work-stream [[saneamiento-mypy-strict]] (`status: completed`) — objetivo cumplido, commit local `13f2907`.

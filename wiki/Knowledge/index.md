@@ -11,6 +11,11 @@ plazo llega aquí (ver modelo de dos capas en `~/.claude/CLAUDE.md`).
 
 ## Páginas
 
+- [[roadmap]] — **guía de desarrollo** por fases (aprender → CI → calidad → mejoras → producción).
+
+### guides
+- [[flujos-negocio]] — recorridos end-to-end por API: durable sleep + event-driven Ceibal + 360.
+
 ### projects
 - [[teleflow-plataforma]] — visión, servicios, DSL v2, durable sleep, estado de implementación.
 
