@@ -44,6 +44,9 @@ include = ["teleflow*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "e2e: tests end-to-end contra el stack levantado (requieren docker compose up)",
+]
 
 [tool.mypy]
 strict = true
