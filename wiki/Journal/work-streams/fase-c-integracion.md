@@ -1,6 +1,6 @@
 ---
 project: copp-ia
-status: active
+status: completed
 created: 2026-07-12
 updated: 2026-07-12
 tags: [fase-c, tests, integracion, e2e, calidad]
@@ -39,3 +39,19 @@ chunk: **e2e contra el gateway** (httpx), automatizando los 2 flujos de [[flujos
 - 2026-07-12: creado. Rama `test/fase-c-integracion` desde `devyos`.
 - 2026-07-12: chunk 1 — suite e2e + CI job e2e; e2e 3/3, unit 26/26, mypy 0.
 - 2026-07-12: chunk 3 — tests de adapters con mocks (10). unit 36, full 39, mypy 0.
+- 2026-07-12: **CERRADO** (`status: completed`).
+
+## Cierre
+
+**Qué se logró:** el runtime pasó de **0 tests** a estar cubierto por:
+- **e2e** (3): durable sleep completo, señales, event-driven Ceibal + Vista 360.
+- **adapters** (10): REST ok/4xx, noop, notification logged/SMTP, helpers — con mocks, sin infra.
+- **CI extendida:** job `quality` (unit + mypy) y job `e2e` (docker compose). Total suite: 39, mypy 0.
+
+**Aprendizajes:** e2e contra el gateway cubre el camino feliz por poco esfuerzo (reutiliza los
+flujos ya validados a mano); los adapters se testean con mocks sin infraestructura; auto-skip de
+e2e mantiene el `pytest` unitario verde sin Docker.
+
+**Diferido (on-demand):** Chunk 2 (testcontainers, engine/entities/rules contra Postgres/Redis
+reales). Decisión: los e2e ya cubren los escenarios felices; la hermeticidad es mejora futura,
+no bloqueante.
