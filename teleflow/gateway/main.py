@@ -12,8 +12,9 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 
 from teleflow.common.config import get_settings
@@ -35,7 +36,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await client.aclose()
 
 
-app = FastAPI(title="TeleFlow API Gateway", version="1.0.0", lifespan=lifespan)
+# Declara el esquema de auth en OpenAPI para que Swagger muestre "Authorize" y
+# envíe el header. auto_error=False: la validación real la hace el middleware.
+api_key_scheme = APIKeyHeader(name="X-TeleFlow-API-Key", auto_error=False)
+
+app = FastAPI(title="TeleFlow API Gateway", version="1.0.0", lifespan=lifespan,
+              dependencies=[Depends(api_key_scheme)])
 setup_observability(app, "api-gateway")
 
 
