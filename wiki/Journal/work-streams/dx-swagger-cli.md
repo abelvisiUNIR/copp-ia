@@ -1,6 +1,6 @@
 ---
 project: copp-ia
-status: active
+status: completed
 created: 2026-07-12
 updated: 2026-07-12
 tags: [dx, gateway, cli, swagger, quick-win]
@@ -29,7 +29,7 @@ Rama `fix/dx-swagger-cli` desde `devyos`.
 ## Next Steps
 - [x] Security scheme en el gateway.
 - [x] Fix utf-8 del CLI.
-- [ ] Commit (código + wiki) y merge a `devyos`.
+- [x] Commit (código + wiki) y merge a `devyos` (`7537918`). **CERRADO.**
 
 ## Notas
 - Warning preexistente (no de este cambio): "Duplicate Operation ID" en los catch-all
