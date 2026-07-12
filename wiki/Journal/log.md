@@ -2,6 +2,8 @@
 
 Entradas breves con timestamp, agregadas por `/checkpoint`. Más reciente arriba.
 
+- 2026-07-12: **cierre de sesión.** Fase C ✅ cerrada ([[fase-c-integracion]], runtime 0→39 tests: e2e + adapters + job CI e2e) y quick win DX ✅ ([[dx-swagger-cli]]: security scheme en gateway para Swagger Authorize + CLI utf-8). Todo mergeado a `devyos` (mypy 0, e2e 3/3). **Retomar:** Fase D (endurecer errores del executor `/retry`, o DSL error reporting). Pendiente del owner: push + branch protection (Fase B). Ver [[roadmap]].
+
 - 2026-07-11: Fase B (CI) hecha del lado del código — `.github/workflows/ci.yml` en `chore/ci-pipeline` ([[fase-b-ci]]), validada local (mypy 0, pytest 26/26, build OK). Pendiente del owner: push + branch protection. Próximo: Fase C (tests de integración). Rama actual: `chore/ci-pipeline`.
 
 - 2026-07-11: **Fase A CERRADA** — flujos e2e documentados ([[flujos-negocio]]); work-stream [[fase-a-flujos-e2e]] completado. Docs por módulo diferidas on-demand a Fase C. Próximo: Fase B (CI).
