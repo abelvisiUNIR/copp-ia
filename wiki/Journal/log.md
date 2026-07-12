@@ -2,6 +2,8 @@
 
 Entradas breves con timestamp, agregadas por `/checkpoint`. Más reciente arriba.
 
+- 2026-07-11: Fase B (CI) hecha del lado del código — `.github/workflows/ci.yml` en `chore/ci-pipeline` ([[fase-b-ci]]), validada local (mypy 0, pytest 26/26, build OK). Pendiente del owner: push + branch protection. Próximo: Fase C (tests de integración). Rama actual: `chore/ci-pipeline`.
+
 - 2026-07-11: **Fase A CERRADA** — flujos e2e documentados ([[flujos-negocio]]); work-stream [[fase-a-flujos-e2e]] completado. Docs por módulo diferidas on-demand a Fase C. Próximo: Fase B (CI).
 - 2026-07-11: Fase A — corridos los 2 flujos e2e en vivo (durable sleep + event-driven Ceibal/360); guía [[flujos-negocio]]. Work-stream [[fase-a-flujos-e2e]].
 

@@ -59,12 +59,12 @@ Combinado y en este orden de madurez:
       entendimiento operativo; cada módulo se documenta al tocarlo en Fase C.
 - **Estado:** cerrada. Entendimiento suficiente para pasar a **Fase B (CI)**.
 
-### Fase B — Red de seguridad: CI (Etapa 0, primero)
-- [ ] GitHub Actions: `pytest` + `mypy --strict` + build de la imagen Docker.
-- [ ] Correr en **Python 3.11 real** (target del proyecto; esta sesión usó 3.14).
-- [ ] Gate obligatorio en PR hacia `desarrollo`.
-- **Criterio de salida:** ningún merge entra sin verde.
-- **Por qué primero:** protege lo ya saneado (mypy) y todo lo que venga.
+### Fase B — Red de seguridad: CI (🔶 casi cerrada — pendiente acción del owner en GitHub)
+- [x] GitHub Actions (`.github/workflows/ci.yml`): `pytest` + `mypy --strict` + `docker build`.
+      Validado localmente (mypy 0, pytest 26/26, build OK). Rama `chore/ci-pipeline`. → [[fase-b-ci]]
+- [ ] (owner) push → confirmar verde en **Python 3.11 real** (la sesión usó 3.14).
+- [ ] (owner) Gate: branch protection en `desarrollo` exigiendo el check `CI / quality`.
+- **Criterio de salida:** ningún merge entra sin verde. **Falta solo lo del owner en GitHub.**
 
 ### Fase C — Endurecer calidad
 - [ ] **Tests de integración del runtime** (el mayor riesgo hoy): executor contra
