@@ -74,7 +74,7 @@ Combinado y en este orden de madurez:
       ciclo `entity → rule → process`, `durable sleep + signal`, idempotencia `signal_key`,
       `on_timer` (rule_timer_log), y `view360`.
 - [ ] Tests de adapters (rest/amqp/smtp) con mocks.
-- [ ] **DX:** *security scheme* `APIKeyHeader` en el gateway (Swagger autenticable) +
+- [x] **DX (hecho 2026-07-12 → [[dx-swagger-cli]]):** *security scheme* `APIKeyHeader` en el gateway (Swagger autenticable) +
       fix utf-8 del CLI (`teleflow/cli.py`).
 - [ ] Actualizar README/docs con las discrepancias (Grafana 3001, `stub`).
 - **Criterio de salida:** runtime cubierto por tests, Swagger operable, CLI sin crash en Windows.
