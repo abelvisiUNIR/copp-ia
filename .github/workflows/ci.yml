@@ -32,8 +32,45 @@ jobs:
       - name: Type check (mypy --strict)
         run: mypy teleflow
 
-      - name: Tests
-        run: pytest -q
+      - name: Tests unitarios
+        run: pytest -m "not e2e" -q
+
+  e2e:
+    name: Tests e2e (stack docker compose)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Levantar el stack
+        run: |
+          cp .env.example .env
+          docker compose up --build -d
+
+      - name: Esperar readiness del gateway
+        run: |
+          for i in $(seq 1 40); do
+            curl -sf http://localhost:8000/health && exit 0
+            sleep 3
+          done
+          echo "gateway no respondió a tiempo" && docker compose logs && exit 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install (con extras dev)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Tests e2e
+        run: pytest -m e2e -q
+
+      - name: Logs del stack si algo falla
+        if: failure()
+        run: docker compose logs
 
   docker-build:
     name: Docker build
