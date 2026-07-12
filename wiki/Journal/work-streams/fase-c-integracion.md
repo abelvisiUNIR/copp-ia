@@ -30,10 +30,12 @@ chunk: **e2e contra el gateway** (httpx), automatizando los 2 flujos de [[flujos
 
 ## Next Steps
 - [x] Chunk 1: e2e de los 2 flujos + CI job e2e.
+- [x] Chunk 3: adapters (rest/smtp/noop/notification) con mocks + casos de error.
+      `tests/test_adapters.py` (10 tests, unitarios, sin infra). unit 36, full 39, mypy 0.
 - [ ] Chunk 2 (propuesto): tests de componente con testcontainers (engine/entities/rules
       contra Postgres/Redis reales, sin HTTP) — más hermético.
-- [ ] Chunk 3: adapters (rest/amqp/smtp) con mocks; casos de error (FAILED/retry).
 
 ## Log
 - 2026-07-12: creado. Rama `test/fase-c-integracion` desde `devyos`.
 - 2026-07-12: chunk 1 — suite e2e + CI job e2e; e2e 3/3, unit 26/26, mypy 0.
+- 2026-07-12: chunk 3 — tests de adapters con mocks (10). unit 36, full 39, mypy 0.
