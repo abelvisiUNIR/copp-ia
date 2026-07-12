@@ -66,8 +66,8 @@ Combinado y en este orden de madurez:
 - [ ] (owner) Gate: branch protection en `desarrollo` exigiendo el check `CI / quality`.
 - **Criterio de salida:** ningún merge entra sin verde. **Falta solo lo del owner en GitHub.**
 
-### Fase C — Endurecer calidad
-- [ ] **Tests de integración del runtime** (el mayor riesgo hoy): executor contra
+### Fase C — Endurecer calidad (🔶 en curso → [[fase-c-integracion]])
+- [~] **Tests de integración del runtime** (el mayor riesgo hoy): executor contra
       Postgres/Redis/RabbitMQ (testcontainers o servicios en CI). Cubrir:
       ciclo `entity → rule → process`, `durable sleep + signal`, idempotencia `signal_key`,
       `on_timer` (rule_timer_log), y `view360`.
