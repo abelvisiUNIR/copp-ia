@@ -1,6 +1,6 @@
 ---
 project: copp-ia
-status: active
+status: completed
 created: 2026-07-13
 updated: 2026-07-13
 tags: [fase-d, dsl, parser, validator, error-reporting, dx]
@@ -90,3 +90,30 @@ solo `repr`). Quitado el `except Exception: pass` mudo (context se arma de forma
   detección en transformer + validator). Triggers de rule → warnings (`_emitted_events` +
   `_check_rule_trigger_refs`, semántica confirmada en `executor_service/rules.py`). +7 tests de
   validator. mypy 0, **50/50**. Ambos focos cerrados; falta solo commit (OK owner).
+- 2026-07-13: commiteado (2 commits: `0a5c9ae` código, `8909fc3` wiki) en
+  `feat/dsl-error-reporting` y **mergeado a `devyos`** con `--no-ff` (`03ff11a`). Verde
+  post-merge (mypy 0, 50/50). **CERRADO** (`status: completed`).
+
+## Cierre
+
+**Qué se logró:** primer ítem de Fase D. (1) Mensajes del parser reescritos: distingue los 3
+tipos de `UnexpectedInput`, traduce terminales a su literal/etiqueta y sugiere "se esperaba uno
+de: …", `parse_expr` ahora da contexto, y se quitó el `except: pass` mudo. (2) Validación
+semántica extra: nombres duplicados en el mismo archivo → **error** (antes se sobrescribían en
+silencio); refs de triggers de rule (`on_event`/`on_timer.since`/`on_relation`/`on_state`) →
+**warning**. +11 tests (parser 4, validator 7). mypy 0, suite 39→50. Mergeado a `devyos`
+(`03ff11a`), sin push.
+
+**Aprendizajes:**
+- El `validator.py` ya era robusto: gran parte del ítem "refs a process/step inexistentes" del
+  roadmap ya estaba; el gap real era el **parser**. Lección: verificar el estado real del código
+  antes de dimensionar un ítem del roadmap.
+- La semántica de los triggers de rule vive en `executor_service/rules.py` (`on_state` =
+  `"<subject>.<state>"`, `on_relation` = nombre de relación, `on_event`/`since` = nombre de
+  evento). Validar contra el consumidor real evita codificar suposiciones.
+- Patrón de validación del proyecto: **error** para refs intra-archivo estructurales, **warning**
+  para refs que podrían resolverse en otro flow del dominio (cross-file). Se respetó.
+- `metadata={"transient": True}` en un campo de dataclass + skip en `to_jsonable` = forma limpia
+  de llevar metadata de parseo sin ensuciar el AST serializado del registry.
+- `match_examples()` de Lark quedó **diferido**: el enfoque de terminales esperados ya da
+  mensajes deterministas; `match_examples` re-parsea ejemplos y puede clasificar mal.
