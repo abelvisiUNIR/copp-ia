@@ -9,6 +9,8 @@ def to_jsonable(obj: Any) -> Any:
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         data: dict[str, Any] = {"_node": type(obj).__name__}
         for f in dataclasses.fields(obj):
+            if f.metadata.get("transient"):
+                continue
             data[f.name] = to_jsonable(getattr(obj, f.name))
         return data
     if isinstance(obj, dict):
