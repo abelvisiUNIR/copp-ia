@@ -109,6 +109,41 @@ def test_syntax_error_reports_line(parser):
     assert exc.value.line is not None
 
 
+def test_unexpected_char_message(parser):
+    with pytest.raises(TeleFlowSyntaxError) as exc:
+        parser.parse('entity "x" { lifecycle { ??? } }')
+    msg = exc.value.message
+    assert "carácter inesperado '?'" in msg
+    assert exc.value.column is not None
+
+
+def test_unexpected_token_lists_expected(parser):
+    # `on_state:` sin el STRING que exige la gramática.
+    with pytest.raises(TeleFlowSyntaxError) as exc:
+        parser.parse('rule "r" { on_state: }')
+    assert "se esperaba" in exc.value.message
+    # el terminal aceptado se expone para tooling
+    assert "STRING" in exc.value.expected
+
+
+def test_unexpected_eof_message(parser):
+    with pytest.raises(TeleFlowSyntaxError) as exc:
+        parser.parse('entity "x" ')
+    msg = exc.value.message
+    assert "fin de archivo inesperado" in msg
+    assert "'{'" in msg  # se esperaba abrir el bloque
+
+
+def test_parse_expr_gives_context(parser):
+    # parse_expr antes tiraba el contexto; ahora reporta línea/columna y pista.
+    with pytest.raises(TeleFlowSyntaxError) as exc:
+        parser.parse_expr("1 + ")
+    assert exc.value.line is not None
+    assert exc.value.column is not None
+    assert "Expresión inválida" in exc.value.message
+    assert "se esperaba" in exc.value.message
+
+
 def test_ast_serializable(parser, ceibal_source):
     import json
 

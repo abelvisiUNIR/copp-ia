@@ -8,7 +8,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from teleflow.dsl.ast_nodes import EntityDef, FlowFile, Lifecycle, RelationDef
+from teleflow.dsl.ast_nodes import (
+    EntityDef,
+    FlowFile,
+    Lifecycle,
+    RelationDef,
+    RuleDef,
+)
 
 
 @dataclass
@@ -27,6 +33,13 @@ class FlowValidationError(Exception):
 def validate_flow(flow: FlowFile) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
 
+    for category, name in flow.duplicates:
+        issues.append(ValidationIssue(
+            "error",
+            f"{category}.{name}: definido más de una vez en el mismo archivo",
+            f"{category}.{name}",
+        ))
+
     for entity in flow.entities.values():
         _check_lifecycle(entity.lifecycle, f"entity.{entity.name}", issues)
         _check_entity_events(entity, issues)
@@ -35,6 +48,7 @@ def validate_flow(flow: FlowFile) -> list[ValidationIssue]:
     for rel in flow.relations.values():
         _check_relation(rel, flow, issues)
 
+    known_events = _emitted_events(flow)
     for rule in flow.rules.values():
         triggers = [t for t in (rule.on_event, rule.on_state, rule.on_relation, rule.timer)
                     if t is not None]
@@ -45,6 +59,7 @@ def validate_flow(flow: FlowFile) -> list[ValidationIssue]:
                 f"(on_event | on_state | on_timer | on_relation), tiene {len(triggers)}",
                 f"rule.{rule.name}",
             ))
+        _check_rule_trigger_refs(rule, flow, known_events, issues)
         if rule.execute is None:
             issues.append(ValidationIssue(
                 "error", f"rule.{rule.name}: falta 'execute'", f"rule.{rule.name}"))
@@ -141,6 +156,76 @@ def validate_flow(flow: FlowFile) -> list[ValidationIssue]:
                 ))
 
     return issues
+
+
+def _emitted_events(flow: FlowFile) -> set[str]:
+    """Universo de eventos que este archivo puede emitir (para validar triggers).
+
+    Incluye los `emit` declarados en entities/relations, los eventos emitidos por
+    procesos/steps en `on_complete`, y los eventos sintéticos que el executor genera
+    por defecto (`<tipo>.transitioned`, `relation.<tipo>.created`).
+    """
+    events: set[str] = set()
+    for entity in flow.entities.values():
+        events.update(ev.emit for ev in entity.events)
+        events.add(f"{entity.name}.transitioned")
+    for rel in flow.relations.values():
+        events.update(ev.emit for ev in rel.events)
+        events.add(f"{rel.name}.transitioned")
+        events.add(f"relation.{rel.name}.created")
+    for proc in flow.processes.values():
+        events.update(a.event for a in proc.on_complete
+                      if a.kind == "emit" and a.event is not None)
+    for step in flow.steps.values():
+        events.update(a.event for a in step.on_complete
+                      if a.kind == "emit" and a.event is not None)
+    return events
+
+
+def _check_rule_trigger_refs(rule: RuleDef, flow: FlowFile, known_events: set[str],
+                             issues: list[ValidationIssue]) -> None:
+    where = f"rule.{rule.name}"
+    # on_event / on_timer.since referencian un nombre de evento de dominio.
+    for label, value in (("on_event", rule.on_event),
+                         ("on_timer.since", rule.timer.since if rule.timer else None)):
+        if value is not None and known_events and value not in known_events:
+            issues.append(ValidationIssue(
+                "warning",
+                f"{where}: {label} '{value}' no coincide con ningún evento emitido "
+                "en este archivo (puede emitirse en otro flow del dominio)",
+                where,
+            ))
+    # on_relation referencia una relación por nombre.
+    if rule.on_relation is not None and flow.relations \
+            and rule.on_relation not in flow.relations:
+        issues.append(ValidationIssue(
+            "warning",
+            f"{where}: on_relation '{rule.on_relation}' no está definida en este archivo",
+            where,
+        ))
+    # on_state tiene forma '<entidad|relación>.<ESTADO>' (ver executor rules.py).
+    if rule.on_state is not None:
+        if "." not in rule.on_state:
+            issues.append(ValidationIssue(
+                "warning",
+                f"{where}: on_state '{rule.on_state}' debería tener forma "
+                "'<entidad|relación>.<estado>'",
+                where,
+            ))
+        else:
+            subject, state = rule.on_state.rsplit(".", 1)
+            lifecycle = None
+            if subject in flow.entities:
+                lifecycle = flow.entities[subject].lifecycle
+            elif subject in flow.relations:
+                lifecycle = flow.relations[subject].lifecycle
+            if lifecycle is not None and state not in lifecycle.states:
+                issues.append(ValidationIssue(
+                    "warning",
+                    f"{where}: on_state '{rule.on_state}' usa un estado no declarado "
+                    f"en el lifecycle de '{subject}'",
+                    where,
+                ))
 
 
 def _check_lifecycle(lc: Lifecycle | None, where: str,

@@ -469,23 +469,24 @@ class TeleFlowTransformer(Transformer[Token, Any]):
     # ------------------------------------------------------------- documento
     def start(self, c: list[Any]) -> FlowFile:
         doc = FlowFile()
+        buckets: dict[type[Any], tuple[str, dict[str, Any]]] = {
+            EntityDef: ("entity", doc.entities),
+            RelationDef: ("relation", doc.relations),
+            RuleDef: ("rule", doc.rules),
+            View360Def: ("view360", doc.views),
+            ProcessDef: ("process", doc.processes),
+            StepDef: ("step", doc.steps),
+            IntegrationDef: ("integration", doc.integrations),
+            CatalogDef: ("catalog", doc.catalogs),
+            PartyDef: ("party", doc.parties),
+        }
         for block in c:
-            if isinstance(block, EntityDef):
-                doc.entities[block.name] = block
-            elif isinstance(block, RelationDef):
-                doc.relations[block.name] = block
-            elif isinstance(block, RuleDef):
-                doc.rules[block.name] = block
-            elif isinstance(block, View360Def):
-                doc.views[block.name] = block
-            elif isinstance(block, ProcessDef):
-                doc.processes[block.name] = block
-            elif isinstance(block, StepDef):
-                doc.steps[block.name] = block
-            elif isinstance(block, IntegrationDef):
-                doc.integrations[block.name] = block
-            elif isinstance(block, CatalogDef):
-                doc.catalogs[block.name] = block
-            elif isinstance(block, PartyDef):
-                doc.parties[block.name] = block
+            entry = buckets.get(type(block))
+            if entry is None:
+                continue
+            category, mapping = entry
+            if block.name in mapping:
+                # el dict sobrescribiría en silencio: registrar el duplicado
+                doc.duplicates.append((category, block.name))
+            mapping[block.name] = block
         return doc
