@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from teleflow.common.config import get_settings
 from teleflow.gateway import auth
 from teleflow.gateway.auth import UnknownScopeError, parse_scopes
-from teleflow.gateway.main import app, get_key_scopes
+from teleflow.gateway.main import app, get_bootstrap_scopes
 
 KEY = "dev-key-change-me"
 H = {"X-TeleFlow-API-Key": KEY}
@@ -31,7 +31,7 @@ def client(monkeypatch):
         monkeypatch.setenv("TELEFLOW_API_KEY", KEY)
         monkeypatch.setenv("TELEFLOW_API_KEY_SCOPES", scopes)
         get_settings.cache_clear()
-        get_key_scopes.cache_clear()
+        get_bootstrap_scopes.cache_clear()
         c = TestClient(app)
         c.__enter__()
         abiertos.append(c)
@@ -42,7 +42,7 @@ def client(monkeypatch):
     for c in abiertos:
         c.__exit__(None, None, None)
     get_settings.cache_clear()
-    get_key_scopes.cache_clear()
+    get_bootstrap_scopes.cache_clear()
 
 
 # ------------------------------------------------------------------ el caso que importa

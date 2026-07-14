@@ -6,6 +6,7 @@ x-python-env: &python-env
   RABBITMQ_URL: amqp://teleflow:${RABBITMQ_PASSWORD:-teleflow}@rabbitmq:5672/
   TELEFLOW_API_KEY: ${TELEFLOW_API_KEY:-dev-key-change-me}
   TELEFLOW_API_KEY_SCOPES: ${TELEFLOW_API_KEY_SCOPES:-*}
+  API_KEY_CACHE_TTL: ${API_KEY_CACHE_TTL:-30}
   PARSER_URL: http://parser-service:8001
   REGISTRY_URL: http://registry-service:8003
   EXECUTOR_URL: http://executor-service:8002
