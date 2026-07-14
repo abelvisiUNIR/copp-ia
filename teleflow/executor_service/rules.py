@@ -55,7 +55,7 @@ class RuleEngine:
     async def _consume_forever(self) -> None:
         while True:
             try:
-                await self._bus.consume("teleflow.rules", self._on_event)
+                await self._bus.consume(self._settings.rules_queue, self._on_event)
             except asyncio.CancelledError:
                 return
             except Exception as exc:

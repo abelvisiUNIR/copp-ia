@@ -44,7 +44,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     sessionmaker = init_db(settings)
     domain_loader = DomainLoader(sessionmaker, get_parser(),
                                  ttl_seconds=settings.domain_cache_ttl)
-    event_bus = EventBus(settings.rabbitmq_url, settings.events_exchange)
+    event_bus = EventBus(settings.rabbitmq_url, settings.events_exchange,
+                         max_attempts=settings.event_max_attempts,
+                         retry_base_delay=settings.event_retry_base_delay)
     entity_service = EntityService(sessionmaker, domain_loader, event_bus)
     engine = ExecutionEngine(sessionmaker, domain_loader, event_bus,
                              entity_service, settings)

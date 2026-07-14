@@ -36,6 +36,19 @@ class Settings(BaseSettings):
     domain_cache_ttl: int = 30
     events_exchange: str = "teleflow.domain.events"
 
+    # Bus de eventos: reintentos antes de mandar el evento a la DLQ (<queue>.dlq).
+    # La cola lleva sufijo de versión: cambiar sus argumentos (x-dead-letter-exchange)
+    # sobre una cola ya declarada da PRECONDITION_FAILED en RabbitMQ.
+    rules_queue: str = "teleflow.rules.v1"
+    event_max_attempts: int = 3
+    event_retry_base_delay: float = 1.0
+
+    # Reintentos de steps: cuántos los decide el DSL (`retries:` del step); acá van
+    # los tiempos. Backoff exponencial con full jitter, topeado a max_delay.
+    # Solo se reintentan errores transitorios (5xx/408/429/timeout/red).
+    step_retry_base_delay: float = 1.0
+    step_retry_max_delay: float = 30.0
+
     # Gateway
     rate_limit_rpm: int = 120
 
