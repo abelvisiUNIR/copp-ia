@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import uuid
 from typing import Any
 
@@ -330,16 +331,30 @@ class ExecutionEngine:
                 return output
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:
+            except adapters.RetryableStepError as exc:
                 last_error = exc
                 STEPS_TOTAL.labels(flow_name, step.name, "error").inc()
                 log.warning("step_attempt_failed", flow_name=flow_name,
-                            step_name=step.name, attempt=attempt + 1, error=str(exc))
+                            step_name=step.name, attempt=attempt + 1,
+                            attempts=retries + 1, error=str(exc))
                 if attempt < retries:
-                    await asyncio.sleep(min(2 ** attempt, 30))
+                    await asyncio.sleep(self._retry_delay(attempt))
+            except Exception as exc:
+                # permanente (400, credencial mala, config, bug): reintentar es
+                # tirar la ventana de reintentos a la basura. Falla ya.
+                STEPS_TOTAL.labels(flow_name, step.name, "error").inc()
+                log.warning("step_failed_permanent", flow_name=flow_name,
+                            step_name=step.name, attempt=attempt + 1, error=str(exc))
+                raise StepFailed(step.name, f"error permanente: {exc}") from exc
 
         raise StepFailed(step.name,
                          f"step agotó {retries + 1} intentos: {last_error}")
+
+    def _retry_delay(self, attempt: int) -> float:
+        """Backoff exponencial con full jitter: evita que N steps reintenten al unísono."""
+        ceiling = min(self._settings.step_retry_base_delay * float(2 ** attempt),
+                      self._settings.step_retry_max_delay)
+        return random.uniform(0, ceiling)
 
     async def _apply_step_actions(self, step: StepDef, ctx: dict[str, Any]) -> None:
         await self._apply_actions(step.name, step.on_complete, ctx)

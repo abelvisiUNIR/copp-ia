@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     event_max_attempts: int = 3
     event_retry_base_delay: float = 1.0
 
+    # Reintentos de steps: cuántos los decide el DSL (`retries:` del step); acá van
+    # los tiempos. Backoff exponencial con full jitter, topeado a max_delay.
+    # Solo se reintentan errores transitorios (5xx/408/429/timeout/red).
+    step_retry_base_delay: float = 1.0
+    step_retry_max_delay: float = 30.0
+
     # Gateway
     rate_limit_rpm: int = 120
 
