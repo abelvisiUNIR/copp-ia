@@ -1,6 +1,6 @@
 # Journal log — copp-ia
 
-Entradas breves con timestamp, agregadas por `/checkpoint`. Más reciente arriba.
+Entradas breves con timestamp (checkpoints de progreso). Más reciente arriba.
 
 - 2026-07-14: **DSL — refs colgadas ✅** (`74168c0`, `fix/validator-dangling-refs`, mergeado a `devyos`). Cierra el hallazgo lateral de [[except-swallow-audit]]: el validador silenciaba la ref colgada cuando el archivo no definía **ninguna** entidad/proceso/rule de esa categoría (6 guardas `if flow.X and ...`), así que un flow sin procesos con una rule apuntando a `process.fantasma` pasaba el deploy con `issues: []`. Quitadas las 6 (alcanza con que sea warning y el mensaje diga "puede estar en otro flow"); `step.integration` ya funcionaba así. Ejemplos del repo siguen en 0 issues. Suite 84 unit / 87 con e2e, mypy 0. Verificado en vivo: el deploy ahora devuelve el warning.
 
@@ -29,7 +29,7 @@ Entradas breves con timestamp, agregadas por `/checkpoint`. Más reciente arriba
 
 - 2026-07-10: creado [[roadmap]] — guía de desarrollo por fases (A entender · B CI · C calidad · D mejoras · E producción). Objetivo del owner: aprender + endurecer + proponer mejoras + luego producción.
 
-- 2026-07-09: creada rama personal `devyos` desde `desarrollo`; merge `--no-ff` de `chore/mypy-strict-clean` (`eaef97d`), `.claude/` agregado a `.gitignore` (`f64ed98`), y wiki commiteada (`9945ae1`). Local, sin push.
+- 2026-07-09: creada rama personal `devyos` desde `desarrollo`; merge `--no-ff` de `chore/mypy-strict-clean` (`eaef97d`), config local del entorno agregada a `.gitignore` (`f64ed98`), y wiki commiteada (`9945ae1`). Local, sin push.
 
 - 2026-07-09: **cerrado** work-stream [[saneamiento-mypy-strict]] (`status: completed`) — objetivo cumplido, commit local `13f2907`.
 - 2026-07-09: [[saneamiento-mypy-strict]] — `mypy --strict` **236 → 0** (16 archivos + override networkx en pyproject); pytest 26/26. Pendiente de commit.

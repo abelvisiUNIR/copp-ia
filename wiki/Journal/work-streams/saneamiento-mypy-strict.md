@@ -39,7 +39,7 @@ Parte de los errores podría ser ruido de versión → validar contra 3.11 real 
 - [ ] (owner) push cuando corresponda — nunca automático.
 - [ ] (opcional) Correr `mypy` en Python 3.11 real (esta sesión usó 3.14) para confirmar sin
       ruido de versión.
-- [ ] (al cerrar) `/work-complete`.
+- [ ] (al cerrar) marcar el work-stream como `completed` con resumen y aprendizajes.
 
 ## Decisions
 - Se ataca por chunks incrementales, verificando `pytest` verde tras cada uno.

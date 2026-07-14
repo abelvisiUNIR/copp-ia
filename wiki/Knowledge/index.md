@@ -1,7 +1,8 @@
 # Knowledge — copp-ia
 
 Índice de conocimiento durable del proyecto. Solo lo que vale la pena recordar a largo
-plazo llega aquí (ver modelo de dos capas en `~/.claude/CLAUDE.md`).
+plazo llega aquí (modelo de dos capas: `Journal\` es transitorio, `Knowledge\` es durable;
+la promoción de uno a otro es deliberada, nunca automática).
 
 - `projects/` — visión de los componentes/módulos del sistema.
 - `decisions/` — ADRs (`YYYY-MM-DD-titulo.md`).

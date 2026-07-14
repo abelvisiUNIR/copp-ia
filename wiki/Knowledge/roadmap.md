@@ -116,7 +116,7 @@ Combinado y en este orden de madurez:
 **Regla:** no pasar a Producción (E) sin C + D estables. D siempre después de tener CI (B).
 
 ## Cómo lo trackeamos
-- Cada Fase = uno o más **work-streams** (`/work-start`) con su rama.
+- Cada Fase = uno o más **work-streams**, cada uno con su rama.
 - ADRs para decisiones de mejora (Fase D) en `Knowledge/decisions/`.
 - Este archivo se actualiza marcando `[x]` a medida que se cierran ítems.
 
