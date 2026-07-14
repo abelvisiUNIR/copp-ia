@@ -9,6 +9,7 @@ Deploy de un flow: POST /flows/{name}
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from typing import Any
 
 import httpx
@@ -20,6 +21,7 @@ from pydantic import BaseModel
 from teleflow.common.config import get_settings
 from teleflow.common.logging import setup_logging
 from teleflow.common.observability import setup_observability
+from teleflow.gateway import auth
 
 log = setup_logging("api-gateway")
 
@@ -69,6 +71,8 @@ _buckets: dict[str, TokenBucket] = {}
 
 @app.middleware("http")
 async def auth_and_rate_limit(request: Request, call_next):  # type: ignore[no-untyped-def]
+    """Autentica (¿la key es válida?) y limita. La **autorización** por scope la hace cada
+    ruta con `Depends(require(...))`: el permiso depende del endpoint, no de la key sola."""
     if request.url.path in PUBLIC_PATHS or request.method == "OPTIONS":
         return await call_next(request)
     settings = get_settings()
@@ -79,7 +83,18 @@ async def auth_and_rate_limit(request: Request, call_next):  # type: ignore[no-u
     if not bucket.allow():
         return JSONResponse(status_code=429,
                             content={"detail": "Rate limit excedido"})
+    request.state.scopes = get_key_scopes()
     return await call_next(request)
+
+
+@lru_cache
+def get_key_scopes() -> frozenset[str]:
+    """Scopes de la key global. Cacheado: se parsea una vez, no en cada request.
+
+    Un scope mal escrito en la config revienta acá (`UnknownScopeError`) en el primer request,
+    no queda silenciosamente sin permisos.
+    """
+    return auth.parse_scopes(get_settings().teleflow_api_key_scopes)
 
 
 # ----------------------------------------------------------------- helpers
@@ -110,7 +125,7 @@ class DeployRequest(BaseModel):
     description: str = ""
 
 
-@app.post("/flows/{name}")
+@app.post("/flows/{name}", dependencies=[Depends(auth.require(auth.FLOWS_DEPLOY))])
 async def deploy_flow(name: str, req: DeployRequest) -> Response:
     """Valida en parser-service y persiste en registry-service."""
     assert client is not None
@@ -149,24 +164,26 @@ async def deploy_flow(name: str, req: DeployRequest) -> Response:
     return JSONResponse(status_code=201, content=result)
 
 
-@app.post("/parse")
+@app.post("/parse", dependencies=[Depends(auth.require(auth.FLOWS_READ))])
 async def parse_only(request: Request) -> Response:
+    """Solo valida: no persiste nada, por eso alcanza con flows:read."""
     return await _proxy(request, get_settings().parser_url, "/parse")
 
 
 # -------------------------------------------------------- routing registry
 
-@app.get("/flows")
+@app.get("/flows", dependencies=[Depends(auth.require(auth.FLOWS_READ))])
 async def list_flows(request: Request) -> Response:
     return await _proxy(request, get_settings().registry_url, "/flows")
 
 
-@app.get("/flows/{name}")
+@app.get("/flows/{name}", dependencies=[Depends(auth.require(auth.FLOWS_READ))])
 async def flow_versions(request: Request, name: str) -> Response:
     return await _proxy(request, get_settings().registry_url, f"/flows/{name}")
 
 
-@app.get("/flows/{name}/{version}")
+@app.get("/flows/{name}/{version}",
+         dependencies=[Depends(auth.require(auth.FLOWS_READ))])
 async def flow_version(request: Request, name: str, version: str) -> Response:
     return await _proxy(request, get_settings().registry_url,
                         f"/flows/{name}/{version}")
@@ -174,58 +191,70 @@ async def flow_version(request: Request, name: str, version: str) -> Response:
 
 # -------------------------------------------------------- routing executor
 
-@app.post("/execute")
+@app.post("/execute", dependencies=[Depends(auth.require(auth.INSTANCES_TRIGGER))])
 async def execute(request: Request) -> Response:
     return await _proxy(request, get_settings().executor_url, "/execute")
 
 
-@app.get("/instances")
+@app.get("/instances", dependencies=[Depends(auth.require(auth.INSTANCES_READ))])
 async def instances(request: Request) -> Response:
     return await _proxy(request, get_settings().executor_url, "/instances")
 
 
-@app.get("/instances/{instance_id}")
+@app.get("/instances/{instance_id}",
+         dependencies=[Depends(auth.require(auth.INSTANCES_READ))])
 async def instance(request: Request, instance_id: str) -> Response:
     return await _proxy(request, get_settings().executor_url,
                         f"/instances/{instance_id}")
 
 
-@app.post("/instances/{instance_id}/signal")
+@app.post("/instances/{instance_id}/signal",
+          dependencies=[Depends(auth.require(auth.INSTANCES_SIGNAL))])
 async def signal(request: Request, instance_id: str) -> Response:
     return await _proxy(request, get_settings().executor_url,
                         f"/instances/{instance_id}/signal")
 
 
-@app.post("/instances/{instance_id}/retry")
+@app.post("/instances/{instance_id}/retry",
+          dependencies=[Depends(auth.require(auth.INSTANCES_RETRY))])
 async def retry(request: Request, instance_id: str) -> Response:
     return await _proxy(request, get_settings().executor_url,
                         f"/instances/{instance_id}/retry")
 
 
-@app.api_route("/entities/{rest:path}",
-               methods=["GET", "POST", "PATCH"])
+_ENTITY_SCOPES = {"GET": auth.ENTITIES_READ,      # incluye la vista 360
+                  "POST": auth.ENTITIES_WRITE,
+                  "PATCH": auth.ENTITIES_WRITE}
+
+
+@app.api_route("/entities/{rest:path}", methods=["GET", "POST", "PATCH"],
+               dependencies=[Depends(auth.require_por_metodo(_ENTITY_SCOPES))])
 async def entities(request: Request, rest: str) -> Response:
     return await _proxy(request, get_settings().executor_url, f"/entities/{rest}")
 
 
-@app.api_route("/relations/{rest:path}",
-               methods=["GET", "POST", "PATCH"])
+@app.api_route("/relations/{rest:path}", methods=["GET", "POST", "PATCH"],
+               dependencies=[Depends(auth.require_por_metodo(_ENTITY_SCOPES))])
 async def relations(request: Request, rest: str) -> Response:
     return await _proxy(request, get_settings().executor_url, f"/relations/{rest}")
 
 
 # -------------------------------------------------------- routing composer
 
-@app.api_route("/compose", methods=["POST"])
+@app.api_route("/compose", methods=["POST"],
+               dependencies=[Depends(auth.require(auth.COMPOSE_WRITE))])
 async def compose(request: Request) -> Response:
     return await _proxy(request, get_settings().composer_url, "/compose")
 
 
-@app.api_route("/drafts", methods=["GET"])
+@app.api_route("/drafts", methods=["GET"],
+               dependencies=[Depends(auth.require(auth.COMPOSE_READ))])
 async def drafts(request: Request) -> Response:
     return await _proxy(request, get_settings().composer_url, "/drafts")
 
 
-@app.api_route("/drafts/{rest:path}", methods=["GET", "POST"])
+@app.api_route("/drafts/{rest:path}", methods=["GET", "POST"],
+               dependencies=[Depends(auth.require_por_metodo(
+                   {"GET": auth.COMPOSE_READ, "POST": auth.COMPOSE_WRITE}))])
 async def draft_ops(request: Request, rest: str) -> Response:
     return await _proxy(request, get_settings().composer_url, f"/drafts/{rest}")
