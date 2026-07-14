@@ -8,6 +8,7 @@ Deploy de un flow: POST /flows/{name}
 """
 import secrets
 import time
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from functools import lru_cache
@@ -99,9 +100,22 @@ async def auth_and_rate_limit(request: Request, call_next):  # type: ignore[no-u
 
 # ------------------------------------------------------ resolución de la key
 
-# hash de la key -> (identidad, vence_en). Evita ir a la DB en cada request; el TTL es
-# también la ventana máxima que sobrevive una key revocada (ver Chunk 3).
+# hash de la key -> (identidad, vence_en). Evita ir a la DB en cada request.
 _cache_keys: dict[str, tuple[auth.Identidad, float]] = {}
+
+
+def purgar_cache(key_hash: str) -> None:
+    """Saca una key del cache **ya**, sin esperar el TTL.
+
+    Sin esto, una key revocada seguiría entrando hasta `api_key_cache_ttl` segundos — que es
+    justo lo que no se quiere de una credencial filtrada.
+
+    Límite conocido: purga el cache **de este proceso**. Con varias réplicas del gateway, las
+    demás siguen aceptando la key hasta que su propio TTL venza (≤ `api_key_cache_ttl`). Para
+    revocación inmediata cross-réplica haría falta invalidación por Redis pub/sub (el executor
+    ya usa ese patrón para las señales).
+    """
+    _cache_keys.pop(key_hash, None)
 
 
 @lru_cache
@@ -227,6 +241,61 @@ async def crear_key(req: CrearKeyRequest) -> Response:
         "scopes": sorted(scopes),
         "key": secreto,   # única vez que se ve: solo se guarda el hash
         "aviso": "guardá esta key ahora: no se puede volver a mostrar",
+    })
+
+
+@app.delete("/keys/{key_id}", dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
+async def revocar_key(key_id: uuid.UUID) -> Response:
+    """Revoca una key (`active=False`) y la saca del cache **sin reiniciar el stack**.
+
+    No se borra la fila: la identidad se conserva para la auditoría (qué hizo esa key).
+    """
+    async with get_sessionmaker()() as session:
+        fila = await session.get(ApiKey, key_id)
+        if fila is None:
+            return JSONResponse(status_code=404, content={"detail": "key no encontrada"})
+        if not fila.active:
+            return JSONResponse(status_code=409,
+                                content={"detail": f"la key '{fila.name}' ya está revocada"})
+        fila.active = False
+        key_hash, name = fila.key_hash, fila.name
+        await session.commit()
+
+    purgar_cache(key_hash)
+    log.info("api_key_revoked", key_name=name, key_id=str(key_id))
+    return JSONResponse(content={"id": str(key_id), "name": name, "active": False})
+
+
+@app.post("/keys/{key_id}/rotate",
+          dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
+async def rotar_key(key_id: uuid.UUID) -> Response:
+    """Genera un secreto nuevo para la misma identidad y scopes. El viejo deja de valer ya.
+
+    Rotar (no revocar + crear) mantiene el `name`, así la auditoría no se corta al cambiar
+    el secreto.
+    """
+    secreto = auth.generar_key()
+    async with get_sessionmaker()() as session:
+        fila = await session.get(ApiKey, key_id)
+        if fila is None:
+            return JSONResponse(status_code=404, content={"detail": "key no encontrada"})
+        if not fila.active:
+            return JSONResponse(
+                status_code=409,
+                content={"detail": f"la key '{fila.name}' está revocada: no se rota"})
+        hash_viejo = fila.key_hash
+        fila.key_hash = auth.hash_key(secreto)
+        name, scopes = fila.name, [str(s) for s in fila.scopes]
+        await session.commit()
+
+    purgar_cache(hash_viejo)   # el secreto viejo deja de entrar en el acto
+    log.info("api_key_rotated", key_name=name, key_id=str(key_id))
+    return JSONResponse(content={
+        "id": str(key_id),
+        "name": name,
+        "scopes": scopes,
+        "key": secreto,
+        "aviso": "guardá esta key ahora: la anterior ya no sirve",
     })
 
 
