@@ -85,7 +85,10 @@ Combinado y en este orden de madurez:
   eventos fallidos ya no se descartan: dead-letter a `teleflow.rules.v1.dlq`) + backoff con
   clasificación transitorio/permanente y full jitter en los steps. **Circuit breaker en REST:
   pendiente**, deliberadamente fuera de scope hasta que haya un upstream que lo justifique.
-- **Seguridad:** API keys con scopes/roles (hoy es una sola key global); rotación; TLS interno.
+- [x] **Seguridad (hecho 2026-07-14 → [[seguridad-api-keys]]):** API keys con scopes (10, por
+  familia de acción), una key por integración (tabla `api_keys`, hasheadas SHA-256, con
+  identidad para auditoría), y **revocación/rotación sin reiniciar el stack**. La key de env
+  queda como bootstrap. **TLS interno: pendiente** (va con Fase E, hardening).
 - **Observabilidad de negocio:** confirmar/crear dashboards Grafana (backlog `human_task`,
   procesos por estado) que la doc menciona.
 - **DSL:** mejores mensajes de error del parser; validación semántica extra (refs a
