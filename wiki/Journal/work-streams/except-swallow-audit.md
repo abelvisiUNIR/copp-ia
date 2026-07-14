@@ -62,12 +62,17 @@ ACKeaba y se perdía.
       y `teleflow_domain_broken_flows`.
 - [x] Mergear a `devyos`.
 
-## Hallazgo lateral (no arreglado — fuera de scope)
-`validator.py:68` solo avisa de una rule que apunta a un process inexistente **si el flow
-tiene al menos un process** (`if flow.processes and target not in flow.processes`). Un flow
-**sin ningún process** con una rule colgada pasa el deploy con `issues: []` — verificado en
-vivo con el flow de prueba. La guarda existe para no romper refs entre archivos del dominio
-(inferencia), pero silencia de más. Candidato a un chunk de DSL.
+## Hallazgo lateral — ✅ arreglado (`74168c0`, rama `fix/validator-dangling-refs`)
+`validator.py:68` solo avisaba de una rule que apunta a un process inexistente **si el flow
+tenía al menos un process** (`if flow.processes and target not in flow.processes`). Un flow
+**sin ningún process** con una rule colgada pasaba el deploy con `issues: []` — verificado en
+vivo. La misma guarda estaba en 6 lugares (processes/entities/relations/rules/known_events) y
+**no** en `step.integration`, que ya avisaba siempre.
+
+Arreglado: se quitaron las 6 guardas. Para no ensuciar los flows que referencian otro archivo
+del dominio alcanza con que sea **warning** (no bloquea el deploy) y que el mensaje lo diga.
+Los 2 ejemplos del repo siguen en **0 issues**; el flow de la rule colgada ahora devuelve el
+warning en el deploy (verificado en vivo). Suite 84 unit / 87 con e2e.
 
 ## Decisions
 - **Riesgo asumido en #1 — duplicación:** re-lanzar hace que el evento se reintente, y el

@@ -163,3 +163,50 @@ def test_rule_on_state_malformed_warns(parser):
     '''
     assert any("<entidad|relación>.<estado>" in w.message
                for w in _warnings(parser, source))
+
+
+# ----------------------- refs colgadas cuando el archivo no define esa categoría
+# Antes se silenciaban (`if flow.processes and ...`): un flow sin procesos podía tener
+# una rule apuntando a un process inexistente y el deploy devolvía `issues: []`.
+
+def test_rule_a_process_inexistente_avisa_aunque_el_flow_no_tenga_procesos(parser):
+    source = '''
+    entity "cosa" {
+      lifecycle { initial: "A" states ["A", "B"] transitions { A -> B via "go" } }
+      events { on_transition "go" emit "cosa.lista" }
+    }
+    rule "r" { on_event: "cosa.lista" execute: process.fantasma }
+    '''
+    assert any("process.fantasma" in w.message for w in _warnings(parser, source))
+
+
+def test_view360_alerta_a_rule_inexistente_avisa_sin_rules_en_el_archivo(parser):
+    source = '''
+    entity "cosa" { }
+    view360 "v" {
+      entity: entity.cosa
+      alerts { rule: rule.no_existe }
+    }
+    '''
+    assert any("rule.no_existe" in w.message for w in _warnings(parser, source))
+
+
+def test_relation_a_entity_inexistente_avisa_sin_entities_en_el_archivo(parser):
+    source = '''
+    relation "rel" { from: entity.fantasma to: entity.fantasma }
+    '''
+    assert any("entity.fantasma" in w.message for w in _warnings(parser, source))
+
+
+def test_ref_valida_en_el_mismo_archivo_no_avisa(parser):
+    """El warning es por ref colgada, no por existir: lo definido en el archivo no avisa."""
+    source = '''
+    entity "cosa" {
+      lifecycle { initial: "A" states ["A", "B"] transitions { A -> B via "go" } }
+      events { on_transition "go" emit "cosa.lista" }
+    }
+    process "p" { stage "s" { mode: sequential steps [step.x] } }
+    step "x" { type: automated }
+    rule "r" { on_event: "cosa.lista" execute: process.p }
+    '''
+    assert _warnings(parser, source) == []
