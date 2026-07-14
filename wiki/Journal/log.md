@@ -2,6 +2,8 @@
 
 Entradas breves con timestamp, agregadas por `/checkpoint`. Más reciente arriba.
 
+- 2026-07-14: [[resiliencia-executor]] **Chunk 2 (backoff) ✅** — `feat/adapters-backoff` (`fde7750`, sin mergear; sale de `feat/event-bus-dlq`). El retry de steps reintentaba cualquier error por igual: ahora solo lo transitorio (5xx/408/429/red/AMQP caído/SMTP 4xx) gasta reintentos, lo permanente (4xx, SMTP 5xx, config, bugs) falla al toque, y el backoff lleva **full jitter** con base/tope en `Settings`. Suite 55→76, mypy 0, e2e 3/3. **Verificado en vivo**: host caído → 3 intentos con backoff; 4xx → falla en 0.4s pese a `retries: 5`. Falta: mergear a `devyos` + cerrar work-stream.
+
 - 2026-07-14: [[resiliencia-executor]] **Chunk 1 (DLQ) ✅** — `feat/event-bus-dlq` (`c24ad87`, sin mergear). Los eventos fallidos ya no se descartan: reintentos con backoff y, agotados, dead-letter a `teleflow.rules.v1.dlq` vía DLX. Suite 50→55, mypy 0, e2e 3/3, **verificado contra RabbitMQ real** (body intacto + `x-death` en la DLQ). Cola vieja `teleflow.rules` borrada (estaba bindeada sin consumer → iba a acumular eventos para siempre). Sigue Chunk 2 (backoff con clasificación de errores + jitter).
 
 - 2026-07-14: **abierto** work-stream [[resiliencia-executor]] — segundo ítem de **Fase D**. Huecos verificados en `copp-ia@devyos@1c9a7ea`: (a) los eventos que fallan al procesarse **se ACKean y se pierden** (`events.py:64-71`, cola sin DLX), (b) el publish fallido solo loguea, (c) el backoff de steps existe pero es ciego (reintenta un `400` igual que un `503`) y hardcodeado (`engine.py:316-339`). Chunk 1 = DLQ (cola nueva `teleflow.rules.v1` + DLX, nack tras N=3 intentos); Chunk 2 = backoff con clasificación de errores + jitter. Circuit breaker fuera de scope.

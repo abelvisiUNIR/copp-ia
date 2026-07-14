@@ -48,18 +48,30 @@ la declaración con DLX es aceptada, el evento que falla reintenta y aterriza en
 Cola vieja `teleflow.rules` **borrada** (2026-07-14, HTTP 204): seguía bindeada al exchange
 con `#` y sin consumer, o sea que iba a acumular todos los eventos para siempre.
 
-Próximo: **Chunk 2 (backoff)**.
+**Chunk 2 (backoff) ✅ hecho** en `feat/adapters-backoff` (`fde7750`, sale de
+`feat/event-bus-dlq`, así que al mergear entran los dos chunks). Suite 55→**76**, mypy 0,
+e2e 3/3. **Verificado contra el executor real**: un step contra un host caído reintenta 3
+veces (1 + `retries: 2`) con el backoff jitter visible entre intentos y recién ahí falla; un
+4xx falla **al primer intento en 0.4s pese a `retries: 5`** (antes gastaba 6 intentos y ~30s
+para nada).
+
+Próximo: mergear a `devyos` y cerrar el work-stream.
 
 ## Next Steps
 - [x] **Chunk 1 — DLQ** (rama `feat/event-bus-dlq`, `c24ad87`):
       DLX `teleflow.domain.events.dlx` + cola `teleflow.rules.v1` con `x-dead-letter-exchange`,
       `reject(requeue=False)` tras N intentos, body ilegible directo a DLQ, `publish` con
       reintentos, métricas `teleflow_events_{consumed,published}_total`, 8 tests.
-- [ ] Mergear `feat/event-bus-dlq` a `devyos` (`--no-ff`).
-- [ ] **Chunk 2 — Backoff** (rama aparte): clasificar retryable vs permanente en adapters,
-      jitter, límites en `Settings`.
+- [x] **Chunk 2 — Backoff** (rama `feat/adapters-backoff`, `fde7750`):
+      `RetryableStepError` + clasificación en adapters (transitorio: 5xx/408/429/red/AMQP
+      caído/SMTP 4xx; permanente: 4xx, SMTP 5xx, config), `_run_step` reintenta solo lo
+      transitorio, backoff exponencial con **full jitter** y base/tope en `Settings`.
+- [ ] Mergear `feat/adapters-backoff` a `devyos` (`--no-ff`) — arrastra también el Chunk 1.
 - [ ] Circuit breaker en REST: **fuera de scope**; evaluar como chunk 3 sólo si hace falta.
 - [ ] Actualizar [[roadmap]] al cerrar.
+- [ ] Limpieza dev: el flow `verify_backoff` quedó registrado en el registry del stack local
+      (versionado inmutable, ADR); es inofensivo (sin rules ni triggers) pero ensucia el
+      dominio de dev.
 
 ## Decisions
 - **Cola nueva `teleflow.rules.v1` en vez de mutar `teleflow.rules`.** Agregar
@@ -76,6 +88,8 @@ Próximo: **Chunk 2 (backoff)**.
 - [[roadmap]] (Fase D), [[2026-06-30-adr-004-rabbitmq-en-stack]]
 
 ## Log
+- 2026-07-14: **Chunk 2 (backoff) cerrado** (`fde7750`, rama `feat/adapters-backoff`).
+  Clasificación transitorio/permanente + full jitter. Suite 76, mypy 0. Verificado en vivo.
 - 2026-07-14: **Chunk 1 (DLQ) cerrado** (`c24ad87`, rama `feat/event-bus-dlq`). Verificado
   contra el broker real; cola vieja `teleflow.rules` borrada. Sigue Chunk 2 (backoff).
 - 2026-07-14: creado. Huecos verificados en código; decididas cola `v1` + política DLQ (N=3).
