@@ -81,7 +81,10 @@ Combinado y en este orden de madurez:
 
 ### Fase D — Mejoras / ideas (PROPUESTAS — evaluar antes de implementar)
 > (propuesta, no del arquitecto) — cada idea pasa por un ADR o mini-work-stream antes de codear.
-- **Resiliencia:** DLQ en RabbitMQ, backoff exponencial en adapters, circuit breaker en REST.
+- [x] **Resiliencia (hecho 2026-07-14 → [[resiliencia-executor]]):** DLQ en RabbitMQ (los
+  eventos fallidos ya no se descartan: dead-letter a `teleflow.rules.v1.dlq`) + backoff con
+  clasificación transitorio/permanente y full jitter en los steps. **Circuit breaker en REST:
+  pendiente**, deliberadamente fuera de scope hasta que haya un upstream que lo justifique.
 - **Seguridad:** API keys con scopes/roles (hoy es una sola key global); rotación; TLS interno.
 - **Observabilidad de negocio:** confirmar/crear dashboards Grafana (backlog `human_task`,
   procesos por estado) que la doc menciona.

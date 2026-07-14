@@ -1,6 +1,6 @@
 ---
 project: copp-ia
-status: active
+status: completed
 created: 2026-07-14
 updated: 2026-07-14
 tags: [fase-d, executor, resiliencia, rabbitmq, dlq, backoff, adapters]
@@ -66,7 +66,7 @@ Próximo: mergear a `devyos` y cerrar el work-stream.
       `RetryableStepError` + clasificación en adapters (transitorio: 5xx/408/429/red/AMQP
       caído/SMTP 4xx; permanente: 4xx, SMTP 5xx, config), `_run_step` reintenta solo lo
       transitorio, backoff exponencial con **full jitter** y base/tope en `Settings`.
-- [ ] Mergear `feat/adapters-backoff` a `devyos` (`--no-ff`) — arrastra también el Chunk 1.
+- [x] Mergear `feat/adapters-backoff` a `devyos` (`--no-ff`, `3f69b55`) — entró con el Chunk 1.
 - [ ] Circuit breaker en REST: **fuera de scope**; evaluar como chunk 3 sólo si hace falta.
 - [ ] Actualizar [[roadmap]] al cerrar.
 - [ ] Limpieza dev: el flow `verify_backoff` quedó registrado en el registry del stack local
@@ -87,7 +87,38 @@ Próximo: mergear a `devyos` y cerrar el work-stream.
 - `teleflow/common/config.py`
 - [[roadmap]] (Fase D), [[2026-06-30-adr-004-rabbitmq-en-stack]]
 
+## Cierre (2026-07-14)
+
+**Resultado:** objetivo cumplido. Los dos chunks mergeados a `devyos` (`3f69b55`, `--no-ff`),
+suite 50→**76**, mypy strict **0**, e2e **3/3**. Segundo ítem de Fase D cerrado.
+
+Lo que cambió, en una línea: **un fallo ya no desaparece en silencio, y un fallo permanente
+ya no se reintenta como si fuera transitorio.**
+
+### Aprendizajes
+- **El bug más caro estaba en el `except` que "no hacía nada malo".** `events.py` capturaba la
+  excepción del callback, la logueaba y ACKeaba igual: el evento se perdía. Un `try/except` que
+  loguea *parece* manejo de errores y no lo es. Vale la pena auditar el resto de los `except
+  Exception` del repo con esta lente.
+- **Reintentar sin clasificar el error es peor que no reintentar**: gastaba `retries` (y ~30s
+  de backoff) en un 400 que nunca iba a andar. La clasificación transitorio/permanente dio más
+  valor que cualquier tuning de tiempos.
+- **Los tests con fakes no cubrían el riesgo real.** Los 8 tests de `handle_message` pasaban,
+  pero lo que podía romper de verdad era RabbitMQ rechazando la declaración con DLX
+  (`PRECONDITION_FAILED`) — eso solo se ve contra el broker real. Verificar en vivo encontró
+  además que la cola vieja quedaba bindeada **sin consumer**, acumulando eventos para siempre.
+- **Gotcha RabbitMQ (durable):** los argumentos de una cola (`x-dead-letter-exchange`) son
+  inmutables una vez declarada. Cambiarlos exige **cola nueva** (acá `teleflow.rules.v1`) o
+  borrar la vieja. Vale para cualquier cambio futuro de argumentos de cola.
+
+### Pendiente deliberado (no bloquea)
+- **Circuit breaker en REST**: fuera de scope; la clasificación de errores ya cubre el grueso.
+  Retomar si aparece un upstream que se cae seguido.
+- **Limpieza dev:** el flow `verify_backoff` quedó en el registry del stack local (inofensivo:
+  sin rules ni triggers).
+
 ## Log
+- 2026-07-14: **CERRADO** (`status: completed`). Mergeado a `devyos` (`3f69b55`).
 - 2026-07-14: **Chunk 2 (backoff) cerrado** (`fde7750`, rama `feat/adapters-backoff`).
   Clasificación transitorio/permanente + full jitter. Suite 76, mypy 0. Verificado en vivo.
 - 2026-07-14: **Chunk 1 (DLQ) cerrado** (`c24ad87`, rama `feat/event-bus-dlq`). Verificado
