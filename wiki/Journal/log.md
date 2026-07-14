@@ -2,6 +2,8 @@
 
 Entradas breves con timestamp, agregadas por `/checkpoint`. Más reciente arriba.
 
+- 2026-07-14: **cierre de sesión.** Fase D: primer ítem [[dsl-error-reporting]] ✅ cerrado y mergeado a `devyos` (`c38c9c3`, mypy 0, suite 50/50). Historia de la sesión reescrita sin trailer de IA (preferencia del owner). **Retomar:** elegir siguiente ítem de Fase D — resiliencia executor (`/retry` + DLQ/backoff), seguridad (API keys con scopes/roles), o limpieza DX (operation_id + export OpenAPI). Pendiente del owner: push + branch protection (Fase B). Ver [[roadmap]].
+
 - 2026-07-13: **CERRADO** work-stream [[dsl-error-reporting]] (`status: completed`). Primer ítem de **Fase D** hecho: mensajes del parser (3 tipos de error + terminales esperados + `parse_expr` con contexto) y validación semántica extra (duplicados → error; refs de triggers de rule → warning). +11 tests, mypy 0, suite 39→50. Mergeado a `devyos` con `--no-ff` (`03ff11a`), sin push. Próximo: elegir siguiente ítem de Fase D (resiliencia executor / seguridad API keys / limpieza DX).
 
 - 2026-07-13: **abierto** work-stream [[dsl-error-reporting]] — arranca **Fase D** por el DSL error reporting. Scope: mensajes del parser (gap real; `parser.py`) + 2 gaps semánticos a confirmar (triggers de rule con refs inexistentes, nombres duplicados). Hallazgo: `validator.py` ya es robusto (refs process/step ya validadas), así que el foco pivota al parser. Fase B sigue pendiente del owner (push).
