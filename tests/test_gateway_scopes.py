@@ -101,10 +101,24 @@ def test_sin_config_la_key_global_conserva_todos_los_permisos(client):
     """El default es `*`: el upgrade no rompe ninguna instalación existente."""
     c = client("*")
 
-    # (deploy queda fuera: no pasa por _proxy y revienta si el parser no está levantado)
     for path in ("/flows", "/instances", "/entities/nino/n1", "/drafts"):
         assert c.get(path, headers=H).status_code != 403
     assert c.post("/execute", headers=H, json={"flow_name": "f"}).status_code != 403
+    assert c.post("/flows/x", headers=H,
+                  json={"source": "", "version": "1"}).status_code != 403
+
+
+# ------------------------------------------------------------- upstream caído = 502
+
+def test_deploy_con_el_parser_caido_da_502_no_500(client):
+    """Antes: `deploy_flow` no atrapaba el ConnectError y el gateway reventaba con un 500."""
+    c = client("*")   # los servicios core no están levantados en el test
+
+    r = c.post("/flows/x", headers=H, json={"source": "entity \"a\" { }",
+                                            "version": "1.0.0"})
+
+    assert r.status_code == 502
+    assert "Servicio no disponible" in r.json()["detail"]
 
 
 def test_key_invalida_sigue_dando_401_no_403(client):

@@ -99,6 +99,29 @@ def get_key_scopes() -> frozenset[str]:
 
 # ----------------------------------------------------------------- helpers
 
+class UpstreamDown(Exception):
+    """Un servicio core no respondió: se traduce a 502, nunca a un 500 con stack."""
+
+    def __init__(self, base_url: str, exc: Exception):
+        self.base_url = base_url
+        super().__init__(str(exc))
+
+
+def _bad_gateway(base_url: str) -> JSONResponse:
+    return JSONResponse(status_code=502,
+                        content={"detail": f"Servicio no disponible: {base_url}"})
+
+
+async def _post_upstream(base_url: str, path: str,
+                         payload: dict[str, Any]) -> httpx.Response:
+    """POST a un servicio core. `RequestError` (conexión, timeout, DNS) → UpstreamDown."""
+    assert client is not None
+    try:
+        return await client.post(f"{base_url}{path}", json=payload)
+    except httpx.RequestError as exc:
+        raise UpstreamDown(base_url, exc) from exc
+
+
 async def _proxy(request: Request, base_url: str, path: str) -> Response:
     assert client is not None
     body = await request.body()
@@ -110,9 +133,8 @@ async def _proxy(request: Request, base_url: str, path: str) -> Response:
             params=dict(request.query_params),
             headers={"Content-Type": "application/json"} if body else {},
         )
-    except httpx.ConnectError:
-        return JSONResponse(status_code=502,
-                            content={"detail": f"Servicio no disponible: {base_url}"})
+    except httpx.RequestError:  # conexión rechazada, timeout, DNS
+        return _bad_gateway(base_url)
     return Response(content=upstream.content, status_code=upstream.status_code,
                     media_type=upstream.headers.get("content-type", "application/json"))
 
@@ -128,11 +150,13 @@ class DeployRequest(BaseModel):
 @app.post("/flows/{name}", dependencies=[Depends(auth.require(auth.FLOWS_DEPLOY))])
 async def deploy_flow(name: str, req: DeployRequest) -> Response:
     """Valida en parser-service y persiste en registry-service."""
-    assert client is not None
     settings = get_settings()
-    parse_response = await client.post(
-        f"{settings.parser_url}/parse", json={"source": req.source, "name": name}
-    )
+    try:
+        parse_response = await _post_upstream(
+            settings.parser_url, "/parse", {"source": req.source, "name": name})
+    except UpstreamDown as down:
+        return _bad_gateway(down.base_url)
+
     if parse_response.status_code != 200:
         return Response(content=parse_response.content,
                         status_code=parse_response.status_code,
@@ -144,16 +168,20 @@ async def deploy_flow(name: str, req: DeployRequest) -> Response:
             "issues": parsed["issues"],
         })
 
-    register_response = await client.post(
-        f"{settings.registry_url}/flows/{name}",
-        json={
-            "source": req.source,
-            "version": req.version,
-            "description": req.description,
-            "ast": parsed["ast"],
-            "checksum": parsed["checksum"],
-        },
-    )
+    try:
+        register_response = await _post_upstream(
+            settings.registry_url, f"/flows/{name}",
+            {
+                "source": req.source,
+                "version": req.version,
+                "description": req.description,
+                "ast": parsed["ast"],
+                "checksum": parsed["checksum"],
+            },
+        )
+    except UpstreamDown as down:
+        return _bad_gateway(down.base_url)
+
     if register_response.status_code >= 400:
         return Response(content=register_response.content,
                         status_code=register_response.status_code,
