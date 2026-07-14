@@ -36,15 +36,26 @@ y no se toca.
 3. **Rotación / revocación** sin reiniciar el stack.
 
 ## Current State
-Arrancando el Chunk 1.
+**Chunk 1 ✅ hecho** y mergeado a `devyos`. Suite 87→**98**, mypy strict 0.
+**Verificado en vivo:** con el default (`*`) todo sigue andando (deploy 201); con
+`TELEFLOW_API_KEY_SCOPES=entities:read,instances:read` la misma key lee la 360 y las
+instancias, pero recibe **403 en deploy, en `/execute` y al escribir entidades**.
+
+Próximo: Chunk 2 (múltiples keys hasheadas con scopes propios e identidad para auditoría).
 
 ## Next Steps
-- [ ] Definir el set de scopes (uno por familia de acción, no uno por ruta).
-- [ ] `require(scope)` como dependencia de FastAPI; el middleware sigue autenticando y
-      resuelve los scopes de la key en `request.state`.
-- [ ] `TELEFLOW_API_KEY_SCOPES` (default `*` = todos) para poder correr una key restringida.
-- [ ] Tests: 403 cuando falta el scope, 200/502 (o sea, pasa el auth) cuando lo tiene.
-- [ ] Verificar en vivo contra el stack.
+- [x] 10 scopes por familia de acción (no uno por ruta) en `gateway/auth.py`.
+- [x] `require(scope)` / `require_por_metodo(...)` como dependencias de FastAPI; el middleware
+      autentica (401) y deja los scopes en `request.state`.
+- [x] `TELEFLOW_API_KEY_SCOPES` (default `*`) — compatible hacia atrás.
+- [x] 11 tests + verificación en vivo contra el stack.
+- [x] **Bug encontrado de paso y arreglado** (`31ad326`): `deploy_flow` llamaba al parser y al
+      registry **sin** atrapar errores de transporte (solo `_proxy` lo hacía) → con el parser
+      caído el gateway reventaba con un **500 y stack** en vez de 502. Verificado apagando el
+      parser: ahora responde 502 "Servicio no disponible". `_proxy` además pasó de
+      `ConnectError` a `RequestError` (un timeout tampoco cae en 500).
+- [ ] **Chunk 2:** múltiples keys, hasheadas, con scopes e identidad propios.
+- [ ] **Chunk 3:** rotación / revocación sin reiniciar el stack.
 
 ## Decisions
 - **Autenticación en el middleware, autorización en la ruta.** El middleware ya valida la key
@@ -60,4 +71,6 @@ Arrancando el Chunk 1.
 - [[roadmap]] (Fase D — Seguridad)
 
 ## Log
+- 2026-07-14: **Chunk 1 cerrado** (`e86c834` + fix `31ad326`), mergeado a `devyos`. Suite 98,
+  mypy 0. Sigue el Chunk 2.
 - 2026-07-14: creado. Chunk 1 (scopes por endpoint) en marcha.
