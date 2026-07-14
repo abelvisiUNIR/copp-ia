@@ -2,6 +2,10 @@
 
 Entradas breves con timestamp, agregadas por `/checkpoint`. Más reciente arriba.
 
+- 2026-07-14: [[resiliencia-executor]] **Chunk 1 (DLQ) ✅** — `feat/event-bus-dlq` (`c24ad87`, sin mergear). Los eventos fallidos ya no se descartan: reintentos con backoff y, agotados, dead-letter a `teleflow.rules.v1.dlq` vía DLX. Suite 50→55, mypy 0, e2e 3/3, **verificado contra RabbitMQ real** (body intacto + `x-death` en la DLQ). Cola vieja `teleflow.rules` borrada (estaba bindeada sin consumer → iba a acumular eventos para siempre). Sigue Chunk 2 (backoff con clasificación de errores + jitter).
+
+- 2026-07-14: **abierto** work-stream [[resiliencia-executor]] — segundo ítem de **Fase D**. Huecos verificados en `copp-ia@devyos@1c9a7ea`: (a) los eventos que fallan al procesarse **se ACKean y se pierden** (`events.py:64-71`, cola sin DLX), (b) el publish fallido solo loguea, (c) el backoff de steps existe pero es ciego (reintenta un `400` igual que un `503`) y hardcodeado (`engine.py:316-339`). Chunk 1 = DLQ (cola nueva `teleflow.rules.v1` + DLX, nack tras N=3 intentos); Chunk 2 = backoff con clasificación de errores + jitter. Circuit breaker fuera de scope.
+
 - 2026-07-14: **cierre de sesión.** Fase D: primer ítem [[dsl-error-reporting]] ✅ cerrado y mergeado a `devyos` (`c38c9c3`, mypy 0, suite 50/50). Historia de la sesión reescrita sin trailer de IA (preferencia del owner). **Retomar:** elegir siguiente ítem de Fase D — resiliencia executor (`/retry` + DLQ/backoff), seguridad (API keys con scopes/roles), o limpieza DX (operation_id + export OpenAPI). Pendiente del owner: push + branch protection (Fase B). Ver [[roadmap]].
 
 - 2026-07-13: **CERRADO** work-stream [[dsl-error-reporting]] (`status: completed`). Primer ítem de **Fase D** hecho: mensajes del parser (3 tipos de error + terminales esperados + `parse_expr` con contexto) y validación semántica extra (duplicados → error; refs de triggers de rule → warning). +11 tests, mypy 0, suite 39→50. Mergeado a `devyos` con `--no-ff` (`03ff11a`), sin push. Próximo: elegir siguiente ítem de Fase D (resiliencia executor / seguridad API keys / limpieza DX).
