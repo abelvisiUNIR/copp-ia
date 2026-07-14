@@ -12,9 +12,6 @@ node_modules/
 review-ui/dist/
 .DS_Store
 
-# Config local del entorno de trabajo — no se versiona
-.claude/
-
 # Estado local de Obsidian (UI/workspace) — no se versiona
 wiki/.obsidian/
 wiki/Untitled.base
