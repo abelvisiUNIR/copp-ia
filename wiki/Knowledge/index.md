@@ -28,6 +28,8 @@ la promoción de uno a otro es deliberada, nunca automática).
 - [[2026-06-30-adr-005-aislamiento-instancia]] — una DB por organismo; no multi-tenant.
 - [[2026-07-09-mypy-networkx-override]] — (wiki/tooling) networkx `ignore_missing_imports`;
   no instalar `types-networkx` (rompe por numpy 3.12 vs target 3.11).
+- [[2026-07-14-clasificacion-errores-integracion]] — (wiki/executor) el adapter clasifica
+  transitorio vs permanente; el engine solo reintenta lo transitorio, con full jitter.
 
 ### investigations
 - [[2026-07-09-validacion-doc-vs-codigo]] — doc vs código: 26/26 tests ✅, mypy strict ❌,
