@@ -16,6 +16,11 @@ class Settings(BaseSettings):
 
     # Auth
     teleflow_api_key: str = "dev-key-change-me"
+    # Permisos de la key global. `*` = todos (default: no rompe instalaciones existentes).
+    # Restringir es una decisión explícita del operador, p.ej. para una integración que solo
+    # lee: `TELEFLOW_API_KEY_SCOPES=entities:read,instances:read`.
+    # Scopes válidos: ver teleflow/gateway/auth.py
+    teleflow_api_key_scopes: str = "*"
 
     # URLs internas entre servicios
     parser_url: str = "http://parser-service:8001"
