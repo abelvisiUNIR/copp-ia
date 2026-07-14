@@ -185,3 +185,27 @@ class RuleTimerLog(Base):
     fired_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class ApiKey(Base):
+    """Credencial de una integración: sus permisos y su identidad.
+
+    Se guarda **solo el hash** (SHA-256): la key en claro se muestra una única vez, al
+    crearla. SHA-256 y no bcrypt/argon2 a propósito: las keys son secretos aleatorios de
+    alta entropía generados por el sistema, no contraseñas humanas — no hay nada que
+    adivinar por fuerza bruta, y el hash se verifica en **cada request**.
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(200), unique=True)  # identidad, para auditoría
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    scopes: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

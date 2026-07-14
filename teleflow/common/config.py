@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     # lee: `TELEFLOW_API_KEY_SCOPES=entities:read,instances:read`.
     # Scopes válidos: ver teleflow/gateway/auth.py
     teleflow_api_key_scopes: str = "*"
+    # Las demás keys viven en la tabla `api_keys` (una por integración, hasheadas).
+    # El TTL del cache es también la ventana máxima que sobrevive una key revocada.
+    api_key_cache_ttl: int = 30
 
     # URLs internas entre servicios
     parser_url: str = "http://parser-service:8001"

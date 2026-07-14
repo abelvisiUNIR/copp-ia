@@ -6,6 +6,7 @@ routing hacia los servicios core. Los clientes solo conocen este endpoint.
 Deploy de un flow: POST /flows/{name}
   gateway → parser-service (valida) → registry-service (persiste)
 """
+import secrets
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -16,10 +17,14 @@ import httpx
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from teleflow.common.config import get_settings
+from teleflow.common.config import Settings, get_settings
+from teleflow.common.db import get_sessionmaker, init_db
 from teleflow.common.logging import setup_logging
+from teleflow.common.models import ApiKey
 from teleflow.common.observability import setup_observability
 from teleflow.gateway import auth
 
@@ -34,6 +39,7 @@ client: httpx.AsyncClient | None = None
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global client
     client = httpx.AsyncClient(timeout=60.0)
+    init_db(get_settings())   # las API keys viven en Postgres (tabla api_keys)
     yield
     await client.aclose()
 
@@ -71,30 +77,77 @@ _buckets: dict[str, TokenBucket] = {}
 
 @app.middleware("http")
 async def auth_and_rate_limit(request: Request, call_next):  # type: ignore[no-untyped-def]
-    """Autentica (¿la key es válida?) y limita. La **autorización** por scope la hace cada
+    """Autentica (¿quién es esta key?) y limita. La **autorización** por scope la hace cada
     ruta con `Depends(require(...))`: el permiso depende del endpoint, no de la key sola."""
     if request.url.path in PUBLIC_PATHS or request.method == "OPTIONS":
         return await call_next(request)
     settings = get_settings()
     api_key = request.headers.get("X-TeleFlow-API-Key", "")
-    if api_key != settings.teleflow_api_key:
+
+    identidad = await resolver_identidad(api_key, settings)
+    if identidad is None:
         return JSONResponse(status_code=401, content={"detail": "API key inválida"})
+
     bucket = _buckets.setdefault(api_key, TokenBucket(settings.rate_limit_rpm))
     if not bucket.allow():
         return JSONResponse(status_code=429,
                             content={"detail": "Rate limit excedido"})
-    request.state.scopes = get_key_scopes()
+
+    request.state.identidad = identidad
     return await call_next(request)
 
 
-@lru_cache
-def get_key_scopes() -> frozenset[str]:
-    """Scopes de la key global. Cacheado: se parsea una vez, no en cada request.
+# ------------------------------------------------------ resolución de la key
 
-    Un scope mal escrito en la config revienta acá (`UnknownScopeError`) en el primer request,
-    no queda silenciosamente sin permisos.
-    """
+# hash de la key -> (identidad, vence_en). Evita ir a la DB en cada request; el TTL es
+# también la ventana máxima que sobrevive una key revocada (ver Chunk 3).
+_cache_keys: dict[str, tuple[auth.Identidad, float]] = {}
+
+
+@lru_cache
+def get_bootstrap_scopes() -> frozenset[str]:
+    """Scopes de la key global de env. Un scope mal escrito revienta acá, explícito."""
     return auth.parse_scopes(get_settings().teleflow_api_key_scopes)
+
+
+async def resolver_identidad(api_key: str, settings: Settings) -> auth.Identidad | None:
+    """Key de env (bootstrap) o key de la DB. `None` = inválida, revocada o inexistente.
+
+    La de bootstrap se resuelve **sin tocar la DB**: si Postgres está caído o la migración
+    no corrió, el operador no queda afuera de su propia plataforma.
+    """
+    if not api_key:
+        return None
+    if secrets.compare_digest(api_key, settings.teleflow_api_key):
+        return auth.Identidad(name=auth.BOOTSTRAP_KEY_NAME,
+                              scopes=get_bootstrap_scopes())
+
+    hashed = auth.hash_key(api_key)
+    cacheada = _cache_keys.get(hashed)
+    if cacheada is not None and cacheada[1] > time.monotonic():
+        return cacheada[0]
+
+    try:
+        async with get_sessionmaker()() as session:
+            identidad = await auth.resolver_key(session, api_key)
+            if identidad is not None:
+                await session.execute(
+                    update(ApiKey).where(ApiKey.id == identidad.key_id)
+                    .values(last_used_at=func.now()))
+                await session.commit()
+    except (SQLAlchemyError, OSError) as exc:
+        # la DB no responde (OSError = conexión rechazada, no la envuelve SQLAlchemy):
+        # no se puede afirmar que la key sea válida -> 401, nunca un 500 con stack.
+        # La key de bootstrap sigue andando: el operador no queda afuera.
+        log.error("api_key_lookup_failed", error=str(exc))
+        return None
+
+    if identidad is None:
+        _cache_keys.pop(hashed, None)
+        return None
+    _cache_keys[hashed] = (identidad,
+                           time.monotonic() + settings.api_key_cache_ttl)
+    return identidad
 
 
 # ----------------------------------------------------------------- helpers
@@ -137,6 +190,60 @@ async def _proxy(request: Request, base_url: str, path: str) -> Response:
         return _bad_gateway(base_url)
     return Response(content=upstream.content, status_code=upstream.status_code,
                     media_type=upstream.headers.get("content-type", "application/json"))
+
+
+# --------------------------------------------------------- gestión de keys
+
+class CrearKeyRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)   # identidad, p.ej. "integracion-ceibal"
+    scopes: list[str]
+
+
+@app.post("/keys", status_code=201,
+          dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
+async def crear_key(req: CrearKeyRequest) -> Response:
+    """Crea una key con permisos acotados. El secreto se devuelve **una sola vez**."""
+    try:
+        scopes = auth.parse_scopes(",".join(req.scopes))
+    except auth.UnknownScopeError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+    secreto = auth.generar_key()
+    fila = ApiKey(name=req.name, key_hash=auth.hash_key(secreto),
+                  scopes=sorted(scopes), active=True)
+    try:
+        async with get_sessionmaker()() as session:
+            session.add(fila)
+            await session.commit()
+            key_id = fila.id
+    except IntegrityError:
+        return JSONResponse(status_code=409,
+                            content={"detail": f"ya existe una key '{req.name}'"})
+
+    log.info("api_key_created", key_name=req.name, scopes=sorted(scopes))
+    return JSONResponse(status_code=201, content={
+        "id": str(key_id),
+        "name": req.name,
+        "scopes": sorted(scopes),
+        "key": secreto,   # única vez que se ve: solo se guarda el hash
+        "aviso": "guardá esta key ahora: no se puede volver a mostrar",
+    })
+
+
+@app.get("/keys", dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
+async def listar_keys() -> Response:
+    """Lista las credenciales. Nunca devuelve secretos ni hashes."""
+    async with get_sessionmaker()() as session:
+        filas = (await session.execute(
+            select(ApiKey).order_by(ApiKey.created_at))).scalars().all()
+    return JSONResponse(content=[{
+        "id": str(f.id),
+        "name": f.name,
+        "scopes": [str(s) for s in f.scopes],
+        "active": f.active,
+        "created_at": f.created_at.isoformat() if f.created_at else None,
+        "last_used_at": f.last_used_at.isoformat() if f.last_used_at else None,
+    } for f in filas])
 
 
 # ------------------------------------------------------- deploy de flows
