@@ -205,6 +205,9 @@ class View360Service:
                                        + (f" ({detalle})" if detalle else ""),
                         })
                         break
-                except Exception:
+                except Exception as exc:
+                    # la alerta no se pudo evaluar: sin log, la 360 diría "todo bien"
+                    # cuando en realidad no sabemos.
+                    log.warning("alert_not_evaluable", rule=rule.name, error=str(exc))
                     continue
         return alerts

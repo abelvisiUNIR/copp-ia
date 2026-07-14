@@ -9,6 +9,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from prometheus_client import Counter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm.attributes import flag_modified
@@ -27,6 +28,13 @@ from teleflow.executor_service.domain import DomainLoader
 from teleflow.executor_service.events import EventBus
 
 log = get_logger(component="entities")
+
+# Un invariante salteado es una regla de negocio que NO se está aplicando: visible.
+INVARIANTS_SKIPPED = Counter(
+    "teleflow_invariants_skipped_total",
+    "Invariantes no aplicados, por motivo",
+    ["entity", "reason"],  # unparseable | not_evaluable
+)
 
 
 class DomainError(Exception):
@@ -245,9 +253,22 @@ class EntityService:
         for inv in entity_def.invariants:
             try:
                 expr = parser.parse_expr(inv)
+            except Exception as exc:
+                # el invariante NO PARSEA: está mal escrito y por lo tanto no se aplica
+                # a nadie. No es un caso benigno: es una regla de negocio que no existe.
+                log.error("invariant_unparseable", entity=entity_def.name,
+                          invariant=inv, error=str(exc))
+                INVARIANTS_SKIPPED.labels(entity_def.name, "unparseable").inc()
+                continue
+            try:
                 ok = evaluate(expr, ctx)
-            except Exception:
-                continue  # invariante no evaluable con datos actuales: no bloquea
+            except Exception as exc:
+                # no evaluable con ESTOS datos (p.ej. un campo optional vacío): benigno,
+                # no bloquea la transición.
+                log.debug("invariant_not_evaluable", entity=entity_def.name,
+                          invariant=inv, error=str(exc))
+                INVARIANTS_SKIPPED.labels(entity_def.name, "not_evaluable").inc()
+                continue
             if not ok:
                 raise DomainError(
                     f"Invariante violado en {entity_def.name}: \"{inv}\"", 422)

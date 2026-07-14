@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -28,6 +30,14 @@ from teleflow.executor_service.events import EventBus
 
 log = get_logger(component="rule-engine")
 
+# Cuántos eventos en vuelo recordamos para no re-disparar rules ya ejecutadas
+# (ver _on_event). Es memoria best-effort, no un registro de idempotencia.
+MAX_EVENTOS_EN_VUELO = 500
+
+
+class RuleFireError(Exception):
+    """Al menos una rule no pudo dispararse: el evento debe reintentarse / ir a la DLQ."""
+
 
 class RuleEngine:
     def __init__(self, sessionmaker: async_sessionmaker[AsyncSession],
@@ -40,6 +50,9 @@ class RuleEngine:
         self._settings = settings
         self._consumer_task: asyncio.Task[Any] | None = None
         self._timer_task: asyncio.Task[Any] | None = None
+        # evento -> rules que ya se dispararon OK, para que un reintento del evento
+        # no las vuelva a disparar (instancias duplicadas). Ver _on_event.
+        self._ya_disparadas: dict[str, set[str]] = {}
 
     async def start(self) -> None:
         self._consumer_task = asyncio.create_task(self._consume_forever())
@@ -63,11 +76,22 @@ class RuleEngine:
                 await asyncio.sleep(5)
 
     async def _on_event(self, routing_key: str, message: dict[str, Any]) -> None:
+        """Dispara las rules que matchean. Si alguna falla, **levanta**: así el EventBus
+        reintenta el evento y, agotados los intentos, lo manda a la DLQ en vez de ACKearlo.
+
+        Se intentan todas las rules que matchean antes de levantar (una rule rota no debe
+        tapar a las demás), y las que ya salieron bien se saltean en los reintentos para no
+        duplicar instancias de proceso.
+        """
         domain = await self._domain.load()
         event_name = str(message.get("event", routing_key))
         subject = str(message.get("subject", ""))
         subject_kind = str(message.get("subject_kind", ""))
         state = message.get("state")
+
+        huella = self._huella(routing_key, message)
+        ya_ok = self._ya_disparadas.setdefault(huella, set())
+        fallos: list[str] = []
 
         for rule in domain.merged.rules.values():
             matched = False
@@ -80,12 +104,35 @@ class RuleEngine:
                     and subject == rule.on_relation \
                     and event_name == f"relation.{subject}.created":
                 matched = True
-            if not matched:
+            if not matched or rule.name in ya_ok:
                 continue
             try:
                 await self._fire(rule, message)
+                ya_ok.add(rule.name)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
-                log.error("rule_fire_failed", rule=rule.name, error=str(exc))
+                log.error("rule_fire_failed", rule=rule.name, routing_key=routing_key,
+                          error=str(exc))
+                fallos.append(f"{rule.name}: {exc}")
+
+        if fallos:
+            raise RuleFireError(
+                f"{len(fallos)} rule(s) fallaron para '{event_name}': {'; '.join(fallos)}")
+
+        self._ya_disparadas.pop(huella, None)   # evento resuelto: no ocupa memoria
+
+    def _huella(self, routing_key: str, message: dict[str, Any]) -> str:
+        """Identidad del evento para memorizar qué rules ya se dispararon.
+
+        Best-effort en memoria (no es idempotencia durable): si el executor se reinicia,
+        RabbitMQ redelivera y puede haber duplicados — algo que ya pasa hoy por la
+        semántica at-least-once del broker.
+        """
+        if len(self._ya_disparadas) > MAX_EVENTOS_EN_VUELO:
+            self._ya_disparadas.clear()
+        cuerpo = json.dumps(message, sort_keys=True, default=str)
+        return hashlib.sha256(f"{routing_key}|{cuerpo}".encode("utf-8")).hexdigest()
 
     async def _fire(self, rule: RuleDef, message: dict[str, Any]) -> None:
         ctx = await self._build_context(message)
