@@ -213,7 +213,7 @@ class CrearKeyRequest(BaseModel):
     scopes: list[str]
 
 
-@app.post("/keys", status_code=201,
+@app.post("/keys", status_code=201, tags=["keys"], operation_id="crear_key",
           dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
 async def crear_key(req: CrearKeyRequest) -> Response:
     """Crea una key con permisos acotados. El secreto se devuelve **una sola vez**."""
@@ -244,7 +244,8 @@ async def crear_key(req: CrearKeyRequest) -> Response:
     })
 
 
-@app.delete("/keys/{key_id}", dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
+@app.delete("/keys/{key_id}", tags=["keys"], operation_id="revocar_key",
+            dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
 async def revocar_key(key_id: uuid.UUID) -> Response:
     """Revoca una key (`active=False`) y la saca del cache **sin reiniciar el stack**.
 
@@ -266,7 +267,7 @@ async def revocar_key(key_id: uuid.UUID) -> Response:
     return JSONResponse(content={"id": str(key_id), "name": name, "active": False})
 
 
-@app.post("/keys/{key_id}/rotate",
+@app.post("/keys/{key_id}/rotate", tags=["keys"], operation_id="rotar_key",
           dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
 async def rotar_key(key_id: uuid.UUID) -> Response:
     """Genera un secreto nuevo para la misma identidad y scopes. El viejo deja de valer ya.
@@ -299,7 +300,8 @@ async def rotar_key(key_id: uuid.UUID) -> Response:
     })
 
 
-@app.get("/keys", dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
+@app.get("/keys", tags=["keys"], operation_id="listar_keys",
+         dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
 async def listar_keys() -> Response:
     """Lista las credenciales. Nunca devuelve secretos ni hashes."""
     async with get_sessionmaker()() as session:
@@ -323,7 +325,8 @@ class DeployRequest(BaseModel):
     description: str = ""
 
 
-@app.post("/flows/{name}", dependencies=[Depends(auth.require(auth.FLOWS_DEPLOY))])
+@app.post("/flows/{name}", tags=["flows"], operation_id="desplegar_flow",
+          dependencies=[Depends(auth.require(auth.FLOWS_DEPLOY))])
 async def deploy_flow(name: str, req: DeployRequest) -> Response:
     """Valida en parser-service y persiste en registry-service."""
     settings = get_settings()
@@ -368,7 +371,8 @@ async def deploy_flow(name: str, req: DeployRequest) -> Response:
     return JSONResponse(status_code=201, content=result)
 
 
-@app.post("/parse", dependencies=[Depends(auth.require(auth.FLOWS_READ))])
+@app.post("/parse", tags=["flows"], operation_id="validar_flow",
+          dependencies=[Depends(auth.require(auth.FLOWS_READ))])
 async def parse_only(request: Request) -> Response:
     """Solo valida: no persiste nada, por eso alcanza con flows:read."""
     return await _proxy(request, get_settings().parser_url, "/parse")
@@ -376,17 +380,20 @@ async def parse_only(request: Request) -> Response:
 
 # -------------------------------------------------------- routing registry
 
-@app.get("/flows", dependencies=[Depends(auth.require(auth.FLOWS_READ))])
+@app.get("/flows", tags=["flows"], operation_id="listar_flows",
+         dependencies=[Depends(auth.require(auth.FLOWS_READ))])
 async def list_flows(request: Request) -> Response:
     return await _proxy(request, get_settings().registry_url, "/flows")
 
 
-@app.get("/flows/{name}", dependencies=[Depends(auth.require(auth.FLOWS_READ))])
+@app.get("/flows/{name}", tags=["flows"], operation_id="listar_versiones_flow",
+         dependencies=[Depends(auth.require(auth.FLOWS_READ))])
 async def flow_versions(request: Request, name: str) -> Response:
     return await _proxy(request, get_settings().registry_url, f"/flows/{name}")
 
 
-@app.get("/flows/{name}/{version}",
+@app.get("/flows/{name}/{version}", tags=["flows"],
+         operation_id="obtener_version_flow",
          dependencies=[Depends(auth.require(auth.FLOWS_READ))])
 async def flow_version(request: Request, name: str, version: str) -> Response:
     return await _proxy(request, get_settings().registry_url,
@@ -395,31 +402,36 @@ async def flow_version(request: Request, name: str, version: str) -> Response:
 
 # -------------------------------------------------------- routing executor
 
-@app.post("/execute", dependencies=[Depends(auth.require(auth.INSTANCES_TRIGGER))])
+@app.post("/execute", tags=["instances"], operation_id="ejecutar_flow",
+          dependencies=[Depends(auth.require(auth.INSTANCES_TRIGGER))])
 async def execute(request: Request) -> Response:
     return await _proxy(request, get_settings().executor_url, "/execute")
 
 
-@app.get("/instances", dependencies=[Depends(auth.require(auth.INSTANCES_READ))])
+@app.get("/instances", tags=["instances"], operation_id="listar_instancias",
+         dependencies=[Depends(auth.require(auth.INSTANCES_READ))])
 async def instances(request: Request) -> Response:
     return await _proxy(request, get_settings().executor_url, "/instances")
 
 
-@app.get("/instances/{instance_id}",
+@app.get("/instances/{instance_id}", tags=["instances"],
+         operation_id="obtener_instancia",
          dependencies=[Depends(auth.require(auth.INSTANCES_READ))])
 async def instance(request: Request, instance_id: str) -> Response:
     return await _proxy(request, get_settings().executor_url,
                         f"/instances/{instance_id}")
 
 
-@app.post("/instances/{instance_id}/signal",
+@app.post("/instances/{instance_id}/signal", tags=["instances"],
+          operation_id="enviar_signal",
           dependencies=[Depends(auth.require(auth.INSTANCES_SIGNAL))])
 async def signal(request: Request, instance_id: str) -> Response:
     return await _proxy(request, get_settings().executor_url,
                         f"/instances/{instance_id}/signal")
 
 
-@app.post("/instances/{instance_id}/retry",
+@app.post("/instances/{instance_id}/retry", tags=["instances"],
+          operation_id="reintentar_instancia",
           dependencies=[Depends(auth.require(auth.INSTANCES_RETRY))])
 async def retry(request: Request, instance_id: str) -> Response:
     return await _proxy(request, get_settings().executor_url,
@@ -431,13 +443,29 @@ _ENTITY_SCOPES = {"GET": auth.ENTITIES_READ,      # incluye la vista 360
                   "PATCH": auth.ENTITIES_WRITE}
 
 
-@app.api_route("/entities/{rest:path}", methods=["GET", "POST", "PATCH"],
+# Un decorador por método: `api_route(methods=[...])` genera una operación por método y
+# todas heredarían el mismo operation_id, que en un cliente generado colisiona.
+@app.api_route("/entities/{rest:path}", methods=["GET"], tags=["entities"],
+               operation_id="consultar_entities",   # incluye la vista 360
+               dependencies=[Depends(auth.require_por_metodo(_ENTITY_SCOPES))])
+@app.api_route("/entities/{rest:path}", methods=["POST"], tags=["entities"],
+               operation_id="crear_entity",
+               dependencies=[Depends(auth.require_por_metodo(_ENTITY_SCOPES))])
+@app.api_route("/entities/{rest:path}", methods=["PATCH"], tags=["entities"],
+               operation_id="actualizar_entity",
                dependencies=[Depends(auth.require_por_metodo(_ENTITY_SCOPES))])
 async def entities(request: Request, rest: str) -> Response:
     return await _proxy(request, get_settings().executor_url, f"/entities/{rest}")
 
 
-@app.api_route("/relations/{rest:path}", methods=["GET", "POST", "PATCH"],
+@app.api_route("/relations/{rest:path}", methods=["GET"], tags=["entities"],
+               operation_id="consultar_relations",
+               dependencies=[Depends(auth.require_por_metodo(_ENTITY_SCOPES))])
+@app.api_route("/relations/{rest:path}", methods=["POST"], tags=["entities"],
+               operation_id="crear_relation",
+               dependencies=[Depends(auth.require_por_metodo(_ENTITY_SCOPES))])
+@app.api_route("/relations/{rest:path}", methods=["PATCH"], tags=["entities"],
+               operation_id="actualizar_relation",
                dependencies=[Depends(auth.require_por_metodo(_ENTITY_SCOPES))])
 async def relations(request: Request, rest: str) -> Response:
     return await _proxy(request, get_settings().executor_url, f"/relations/{rest}")
@@ -446,18 +474,25 @@ async def relations(request: Request, rest: str) -> Response:
 # -------------------------------------------------------- routing composer
 
 @app.api_route("/compose", methods=["POST"],
+               tags=["composer"], operation_id="componer_draft",
                dependencies=[Depends(auth.require(auth.COMPOSE_WRITE))])
 async def compose(request: Request) -> Response:
     return await _proxy(request, get_settings().composer_url, "/compose")
 
 
 @app.api_route("/drafts", methods=["GET"],
+               tags=["composer"], operation_id="listar_drafts",
                dependencies=[Depends(auth.require(auth.COMPOSE_READ))])
 async def drafts(request: Request) -> Response:
     return await _proxy(request, get_settings().composer_url, "/drafts")
 
 
-@app.api_route("/drafts/{rest:path}", methods=["GET", "POST"],
+@app.api_route("/drafts/{rest:path}", methods=["GET"], tags=["composer"],
+               operation_id="obtener_draft",
+               dependencies=[Depends(auth.require_por_metodo(
+                   {"GET": auth.COMPOSE_READ, "POST": auth.COMPOSE_WRITE}))])
+@app.api_route("/drafts/{rest:path}", methods=["POST"], tags=["composer"],
+               operation_id="operar_draft",   # p.ej. /drafts/{id}/approve
                dependencies=[Depends(auth.require_por_metodo(
                    {"GET": auth.COMPOSE_READ, "POST": auth.COMPOSE_WRITE}))])
 async def draft_ops(request: Request, rest: str) -> Response:
