@@ -10,7 +10,7 @@ tags: [roadmap, plan, guia]
 # Roadmap de desarrollo — copp-ia
 
 > Documento **vivo**. Provenance de los hechos: código en `copp-ia@devyos` (mypy verificado
-> en `@13f2907`). Cumple el pendiente "esbozar roadmap" de [[onboarding-copp-ia]].
+> en `@13f2907`). Cumple el pendiente "esbozar roadmap" de `onboarding-copp-ia`.
 > Fuentes: [[teleflow-plataforma]], [[2026-07-09-validacion-doc-vs-codigo]], doc del arquitecto.
 
 ## Objetivo del owner (Yosdey)
@@ -26,7 +26,7 @@ Combinado y en este orden de madurez:
   (composer + review-ui), Helm, observabilidad. `pytest` **26/26**; deploy + execute
   demostrados en vivo (2026-07-09/10).
 - **Fase 4 del arquitecto: en progreso** (Helm y CLI existen; plugin VS Code y runbooks/DR no).
-- **mypy --strict: saneado a 0** ([[saneamiento-mypy-strict]]).
+- **mypy --strict: saneado a 0** (`saneamiento-mypy-strict`).
 
 ## Huecos reales detectados (no inventados) — insumo del roadmap
 1. **Sin CI**: nada gatea `pytest`/`mypy`. La deuda de tipado se degradó por esto.
@@ -49,7 +49,7 @@ Combinado y en este orden de madurez:
 ## Fases
 
 ### Fase A — Entender la app (✅ CERRADA 2026-07-11)
-- [x] Onboarding y asimilación de arquitectura → [[onboarding-copp-ia]]
+- [x] Onboarding y asimilación de arquitectura → `onboarding-copp-ia`
 - [x] Validación código vs doc → [[2026-07-09-validacion-doc-vs-codigo]]
 - [x] Correr y documentar los 2 flujos de negocio end-to-end por API:
       event-driven Ceibal (entity→rule→process→360) y **durable sleep** (`venta_internet_hogar`,
@@ -61,12 +61,12 @@ Combinado y en este orden de madurez:
 
 ### Fase B — Red de seguridad: CI (🔶 casi cerrada — pendiente acción del owner en GitHub)
 - [x] GitHub Actions (`.github/workflows/ci.yml`): `pytest` + `mypy --strict` + `docker build`.
-      Validado localmente (mypy 0, pytest 26/26, build OK). Rama `chore/ci-pipeline`. → [[fase-b-ci]]
+      Validado localmente (mypy 0, pytest 26/26, build OK). Rama `chore/ci-pipeline`. → `fase-b-ci`
 - [ ] (owner) push → confirmar verde en **Python 3.11 real** (la sesión usó 3.14).
 - [ ] (owner) Gate: branch protection en `desarrollo` exigiendo el check `CI / quality`.
 - **Criterio de salida:** ningún merge entra sin verde. **Falta solo lo del owner en GitHub.**
 
-### Fase C — Endurecer calidad (✅ CERRADA 2026-07-12 → [[fase-c-integracion]])
+### Fase C — Endurecer calidad (✅ CERRADA 2026-07-12 → `fase-c-integracion`)
 > Cubierto: runtime 0→39 tests (e2e de flujos + adapters con mocks), CI con job e2e.
 > Diferido on-demand: tests con testcontainers (Chunk 2). DX (Swagger/CLI) → ver más abajo.
 - [x] **Tests de integración del runtime**: executor contra
@@ -74,18 +74,18 @@ Combinado y en este orden de madurez:
       ciclo `entity → rule → process`, `durable sleep + signal`, idempotencia `signal_key`,
       `on_timer` (rule_timer_log), y `view360`.
 - [ ] Tests de adapters (rest/amqp/smtp) con mocks.
-- [x] **DX (hecho 2026-07-12 → [[dx-swagger-cli]]):** *security scheme* `APIKeyHeader` en el gateway (Swagger autenticable) +
+- [x] **DX (hecho 2026-07-12 → `dx-swagger-cli`):** *security scheme* `APIKeyHeader` en el gateway (Swagger autenticable) +
       fix utf-8 del CLI (`teleflow/cli.py`).
 - [ ] Actualizar README/docs con las discrepancias (Grafana 3001, `stub`).
 - **Criterio de salida:** runtime cubierto por tests, Swagger operable, CLI sin crash en Windows.
 
 ### Fase D — Mejoras / ideas (PROPUESTAS — evaluar antes de implementar)
 > (propuesta, no del arquitecto) — cada idea pasa por un ADR o mini-work-stream antes de codear.
-- [x] **Resiliencia (hecho 2026-07-14 → [[resiliencia-executor]]):** DLQ en RabbitMQ (los
+- [x] **Resiliencia (hecho 2026-07-14 → `resiliencia-executor`):** DLQ en RabbitMQ (los
   eventos fallidos ya no se descartan: dead-letter a `teleflow.rules.v1.dlq`) + backoff con
   clasificación transitorio/permanente y full jitter en los steps. **Circuit breaker en REST:
   pendiente**, deliberadamente fuera de scope hasta que haya un upstream que lo justifique.
-- [x] **Seguridad (hecho 2026-07-14 → [[seguridad-api-keys]]):** API keys con scopes (10, por
+- [x] **Seguridad (hecho 2026-07-14 → `seguridad-api-keys`):** API keys con scopes (10, por
   familia de acción), una key por integración (tabla `api_keys`, hasheadas SHA-256, con
   identidad para auditoría), y **revocación/rotación sin reiniciar el stack**. La key de env
   queda como bootstrap. **TLS interno: pendiente** (va con Fase E, hardening).

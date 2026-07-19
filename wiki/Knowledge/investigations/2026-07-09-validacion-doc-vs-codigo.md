@@ -9,7 +9,7 @@ tags: [validacion, doc-vs-codigo, mypy, tests, onboarding]
 
 # Validación doc vs. código — onboarding copp-ia
 
-> Provenance: `copp-ia@main@6046648`. Parte del work-stream [[onboarding-copp-ia]].
+> Provenance: `copp-ia@main@6046648`. Parte del work-stream `onboarding-copp-ia`.
 > Objetivo: resolver ambigüedades de la doc leyendo el código real.
 
 ## Método
@@ -25,7 +25,7 @@ Lectura de `docker-compose.yml`, `.env.example`, `gateway/main.py`,
 `test_validator`=7, `test_dag`=2.
 
 > **Actualización (2026-07-09):** los 236 errores fueron **saneados a 0** en el work-stream
-> [[saneamiento-mypy-strict]] (pytest sigue 26/26). Lo de abajo es el diagnóstico inicial.
+> `saneamiento-mypy-strict` (pytest sigue 26/26). Lo de abajo es el diagnóstico inicial.
 
 ### 2. `mypy --strict` → 236 errores ❌ (discrepancia — ya resuelta)
 La doc declara "mypy --strict, sin `Any` sin justificar" como convención vigente

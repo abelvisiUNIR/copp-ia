@@ -9,7 +9,7 @@ tags: [adr, executor, adapters, resiliencia, errores, retry]
 # ADR (wiki): clasificar los errores de integración en transitorios vs permanentes
 
 > Provenance: `copp-ia@devyos@2647198`. Decisión tomada durante el work-stream
-> [[resiliencia-executor]] (Chunk 2). **No** es un ADR del arquitecto (los suyos son
+> `resiliencia-executor` (Chunk 2). **No** es un ADR del arquitecto (los suyos son
 > ADR-001..005): es una decisión del equipo sobre el comportamiento del executor.
 
 ## Context
@@ -73,11 +73,11 @@ default seguro, pero probablemente no el deseado para un fallo de red.
 - **No reintentar nada y delegar al `/retry` manual** — descartada: un timeout de red es
   justamente lo que el sistema puede resolver solo, sin despertar a nadie.
 - **Circuit breaker** — no es alternativa sino complemento; queda **fuera de scope** hasta que
-  haya un upstream que se caiga seguido ([[resiliencia-executor]]).
+  haya un upstream que se caiga seguido (`resiliencia-executor`).
 
 ## Sources
 `teleflow/executor_service/adapters.py` (`RetryableStepError`, `is_retryable_status`,
 `_run_rest`, `_run_amqp`, `_send_email`, `_send_sms`) ·
 `teleflow/executor_service/engine.py` (`_run_step`, `_retry_delay`) ·
 `teleflow/common/config.py` (`step_retry_base_delay`, `step_retry_max_delay`) ·
-`tests/test_engine_retry.py` · [[resiliencia-executor]] · [[roadmap]] (Fase D)
+`tests/test_engine_retry.py` · `resiliencia-executor` · [[roadmap]] (Fase D)

@@ -9,7 +9,7 @@ tags: [adr, mypy, typing, networkx, deuda-tecnica]
 # ADR (wiki): networkx como `ignore_missing_imports` en mypy
 
 > Provenance: `copp-ia@chore/mypy-strict-clean@13f2907`. Decisión tomada durante el
-> work-stream [[saneamiento-mypy-strict]]. **No** es un ADR del arquitecto (los suyos son
+> work-stream `saneamiento-mypy-strict`. **No** es un ADR del arquitecto (los suyos son
 > ADR-001..005); es una decisión del equipo sobre el tooling.
 
 ## Context
@@ -54,4 +54,4 @@ No instalar `types-networkx`.
 
 ## Sources
 `pyproject.toml` (`[tool.mypy]` + override) · `teleflow/executor_service/engine.py:19` ·
-[[saneamiento-mypy-strict]] · [[2026-07-09-validacion-doc-vs-codigo]]
+`saneamiento-mypy-strict` · [[2026-07-09-validacion-doc-vs-codigo]]

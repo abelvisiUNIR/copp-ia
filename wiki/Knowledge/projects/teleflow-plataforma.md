@@ -108,7 +108,7 @@ pytest-asyncio, React+Vite. Prometheus+Grafana.
   presente y cableada; **`pytest` → 26/26 passed** (verificado 2026-07-09).
 - **Fase 4: EN PROGRESO** (Helm, CLI, plugin VS Code Tree-sitter, SLA/runbooks).
 - `mypy --strict`: partía de 236 errores (validación inicial); **saneado a 0** el 2026-07-09
-  en el work-stream [[saneamiento-mypy-strict]] (pendiente de commit). Ver
+  en el work-stream `saneamiento-mypy-strict` (pendiente de commit). Ver
   [[2026-07-09-validacion-doc-vs-codigo]].
 
 ## Decisiones de arquitectura
