@@ -93,7 +93,10 @@ Combinado y en este orden de madurez:
   procesos por estado) que la doc menciona.
 - **DSL:** mejores mensajes de error del parser; validación semántica extra (refs a
   process/step inexistentes en `validator.py`).
-- **DX:** colección `.http`/OpenAPI export; publicar OpenAPI a `docs/`.
+- [x] **DX (hecho 2026-07-19 → `limpieza-dx-openapi`):** las 19 rutas del gateway declaran
+  `operation_id` + `tags` (24 operaciones en 5 familias), y `tflow openapi` exporta el
+  contrato a `docs/openapi.json` importando la app, sin stack levantado. README con la tabla
+  de discrepancias doc-vs-código. **Colección `.http`: pendiente**, no se hizo.
 - **UI operativa mínima (opcional):** panel de instancias/entities/360/signals (hoy solo API).
 - **Composer:** LLM real (hoy `stub`), hardening del prompt, tests de composición; templates TMForum.
 - **Doc:** generación semi-automática desde código para frenar el drift.
