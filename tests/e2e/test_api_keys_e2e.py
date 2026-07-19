@@ -66,7 +66,7 @@ def test_el_secreto_no_se_puede_volver_a_ver(key_de_solo_lectura):
     assert any(k["scopes"] == ["entities:read", "instances:read"] for k in listadas)
 
 
-def test_una_key_inexistente_da_401():
+def test_una_key_inexistente_da_401(gateway_up):
     assert httpx.get(f"{GATEWAY}/instances", timeout=20,
                      headers={"X-TeleFlow-API-Key": "tf_no-existe"}).status_code == 401
 
