@@ -17,7 +17,7 @@ Implementación del [Documento de Arquitectura v1.0](docs/TeleFlow-Arquitectura-
 | `composer-service` | 8004 | Abstracción LLM (ADR-003). Borradores `.tflow` desde lenguaje natural |
 | `review-ui` | 3100 | UI React para revisión PR-style de flows generados por IA |
 | `postgres` / `redis` / `rabbitmq` | 5432 / 6379 / 5672 | Estado durable · cache + pub/sub + sleep · bus de eventos |
-| `prometheus` / `grafana` | 9090 / 3000 | Métricas y dashboards |
+| `prometheus` / `grafana` | 9090 / 3001 | Métricas y dashboards |
 
 ## Quickstart (desarrollo / staging)
 
@@ -30,7 +30,7 @@ Las migraciones Alembic corren automáticamente (servicio `migrate`).
 
 - API gateway: http://localhost:8000/docs
 - Review UI: http://localhost:3100
-- Grafana: http://localhost:3000 (admin/admin)
+- Grafana: http://localhost:3001 (admin/admin) — `GRAFANA_PORT` lo cambia; 3000 suele estar ocupado
 - RabbitMQ mgmt: http://localhost:15672 (teleflow/teleflow)
 
 ### Desplegar el dominio de ejemplo (Ceibal)
@@ -130,6 +130,28 @@ mypy teleflow
 ```
 
 Convenciones: tipado estricto, Pydantic v2 en la API, dataclasses en el AST, structlog con `instance_id`/`flow_name`/`step_name`, pytest-asyncio, Alembic.
+
+Los tests e2e (`tests/e2e/`) requieren el stack levantado; si el gateway no responde **se saltan**, así `pytest` sigue verde sin Docker.
+
+### Contrato OpenAPI
+
+```bash
+tflow openapi                          # escribe docs/openapi.json
+tflow openapi --output otro/lado.json
+```
+
+Sale del código (importa la app), así que **no hace falta el stack levantado**. Cada ruta declara `operation_id` y `tags` explícitos, para que un cliente generado tenga nombres estables: si se renombra la función Python, el método del cliente no cambia.
+
+## Doc vs. código: discrepancias conocidas
+
+La doc consolidada (`.md` y PDF en `docs/`) es más vieja que los `.typ` y que el código. **Ante conflicto, el orden de verdad es: código > `.typ` > `.md`/README.**
+
+| Tema | Dice la doc | Es |
+|---|---|---|
+| Puerto Grafana | 3000 (`.md` §9.2) | **3001** en el host (`docker-compose.yml:158`); 3000 es el puerto interno |
+| Proveedores LLM | 3 (`.md` §9.3) | **4**: se omite `stub`, que además es el default del compose sin API key |
+| Rule engine / vista 360 | gateway (diagrama `.md` §7.1) | **executor-service**; el gateway es proxy puro. El diagrama es vista lógica, no ubicación física |
+| `mypy --strict` | convención vigente | ✅ vigente y en 0 — pero **no pasaba** hasta el saneamiento de 2026-07-09 (eran 236 errores) |
 
 ## Producción
 
