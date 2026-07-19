@@ -16,10 +16,10 @@ jobs:
     name: Tests + mypy (strict, py3.11)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"   # target del proyecto (pyproject requires-python >=3.11)
           cache: pip
@@ -39,7 +39,7 @@ jobs:
     name: Tests e2e (stack docker compose)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Levantar el stack
         run: |
@@ -55,7 +55,7 @@ jobs:
           echo "gateway no respondió a tiempo" && docker compose logs && exit 1
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -76,7 +76,7 @@ jobs:
     name: Docker build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build imagen de servicios Python
         run: docker build -t teleflow:ci .
