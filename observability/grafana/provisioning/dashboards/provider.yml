@@ -6,4 +6,6 @@ providers:
     type: file
     disableDeletion: false
     options:
-      path: /var/lib/grafana/dashboards
+      # No en /var/lib/grafana: ahí monta el volumen grafana-data y taparía la imagen
+      # (ver grafana.Dockerfile).
+      path: /etc/grafana/dashboards
