@@ -28,7 +28,20 @@ _CTX_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_.]*)\}")
 
 
 class StepExecutionError(Exception):
-    pass
+    """Fallo permanente: reintentar no lo va a arreglar (400, credencial mala, config)."""
+
+
+class RetryableStepError(StepExecutionError):
+    """Fallo transitorio: el mismo request más tarde puede salir bien (503, timeout, red)."""
+
+
+# 408 Request Timeout y 429 Too Many Requests son transitorios pese a ser 4xx
+RETRYABLE_STATUS = frozenset({408, 429})
+
+
+def is_retryable_status(status_code: int) -> bool:
+    """5xx = el otro lado está roto ahora; 4xx = el request está mal (salvo 408/429)."""
+    return status_code >= 500 or status_code in RETRYABLE_STATUS
 
 
 def resolve_env(value: Any) -> Any:
@@ -84,16 +97,23 @@ async def _run_rest(step: StepDef, integration: IntegrationDef,
             str(integration.config.get("api_key", "")))
     timeout = float(step.timeout_seconds or integration.config.get("timeout", 30))
 
-    async with httpx.AsyncClient(base_url=base_url, timeout=timeout) as client:
-        response = await client.request(
-            method, path, json=payload if method not in ("GET", "DELETE") else None,
-            params=payload if method == "GET" else None, headers=headers,
-        )
+    try:
+        async with httpx.AsyncClient(base_url=base_url, timeout=timeout) as client:
+            response = await client.request(
+                method, path, json=payload if method not in ("GET", "DELETE") else None,
+                params=payload if method == "GET" else None, headers=headers,
+            )
+    except httpx.HTTPError as exc:  # timeout, DNS, conexión rechazada, TLS
+        raise RetryableStepError(
+            f"step.{step.name}: {method} {base_url}{path} → {type(exc).__name__}: {exc}"
+        ) from exc
+
     if response.status_code >= 400:
-        raise StepExecutionError(
-            f"step.{step.name}: {method} {base_url}{path} → {response.status_code}: "
-            f"{response.text[:500]}"
-        )
+        message = (f"step.{step.name}: {method} {base_url}{path} → "
+                   f"{response.status_code}: {response.text[:500]}")
+        if is_retryable_status(response.status_code):
+            raise RetryableStepError(message)
+        raise StepExecutionError(message)
     try:
         body = response.json()
     except ValueError:
@@ -111,7 +131,11 @@ async def _run_amqp(step: StepDef, integration: IntegrationDef,
                       os.environ.get("RABBITMQ_URL", ""))
     routing_key = str(integration.config.get("routing_key", step.name))
     exchange_name = str(integration.config.get("exchange", ""))
-    connection = await aio_pika.connect_robust(url)
+    try:
+        connection = await aio_pika.connect_robust(url)
+    except (aio_pika.exceptions.AMQPError, OSError) as exc:  # broker caído / red
+        raise RetryableStepError(
+            f"step.{step.name}: no se pudo conectar a AMQP: {exc}") from exc
     try:
         channel = await connection.channel()
         message = aio_pika.Message(
@@ -124,6 +148,9 @@ async def _run_amqp(step: StepDef, integration: IntegrationDef,
             await exchange.publish(message, routing_key=routing_key)
         else:
             await channel.default_exchange.publish(message, routing_key=routing_key)
+    except (aio_pika.exceptions.AMQPError, OSError) as exc:
+        raise RetryableStepError(
+            f"step.{step.name}: publish AMQP falló: {exc}") from exc
     finally:
         await connection.close()
     return {"ok": True, "routing_key": routing_key}
@@ -175,7 +202,17 @@ async def _send_email(step: StepDef, integration: IntegrationDef,
                 smtp.login(username, password)
             smtp.send_message(msg)
 
-    await asyncio.to_thread(_send)
+    try:
+        await asyncio.to_thread(_send)
+    except smtplib.SMTPResponseException as exc:
+        # 4xx SMTP = transitorio (mailbox lleno, greylisting); 5xx = permanente
+        message = f"step.{step.name}: SMTP {exc.smtp_code}: {exc.smtp_error!r}"
+        if 400 <= exc.smtp_code < 500:
+            raise RetryableStepError(message) from exc
+        raise StepExecutionError(message) from exc
+    except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, OSError) as exc:
+        raise RetryableStepError(
+            f"step.{step.name}: SMTP no disponible: {exc}") from exc
     return {"ok": True, "channel": "email", "to": recipient}
 
 
@@ -184,11 +221,18 @@ async def _send_sms(step: StepDef, integration: IntegrationDef,
     base_url = resolve_env(str(integration.config.get("base_url", "")))
     token = resolve_env(str(integration.config.get("token", "")))
     headers = {"Authorization": f"Bearer {token}"} if token else {}
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(
-            base_url, json={"to": recipient, "message": body}, headers=headers
-        )
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                base_url, json={"to": recipient, "message": body}, headers=headers
+            )
+    except httpx.HTTPError as exc:
+        raise RetryableStepError(
+            f"step.{step.name}: SMS gateway → {type(exc).__name__}: {exc}") from exc
+
     if response.status_code >= 400:
-        raise StepExecutionError(
-            f"step.{step.name}: SMS gateway → {response.status_code}")
+        message = f"step.{step.name}: SMS gateway → {response.status_code}"
+        if is_retryable_status(response.status_code):
+            raise RetryableStepError(message)
+        raise StepExecutionError(message)
     return {"ok": True, "channel": "sms", "to": recipient}

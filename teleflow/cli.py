@@ -146,6 +146,12 @@ def cmd_approve(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    # Forzar UTF-8 en la salida: en consolas Windows (cp1252) imprimir ✓/✗ crashea.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8")
+
     parser = argparse.ArgumentParser(prog="tflow",
                                      description="TeleFlow CLI — Business & Software as Code")
     sub = parser.add_subparsers(dest="command", required=True)

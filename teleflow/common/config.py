@@ -16,6 +16,14 @@ class Settings(BaseSettings):
 
     # Auth
     teleflow_api_key: str = "dev-key-change-me"
+    # Permisos de la key global. `*` = todos (default: no rompe instalaciones existentes).
+    # Restringir es una decisión explícita del operador, p.ej. para una integración que solo
+    # lee: `TELEFLOW_API_KEY_SCOPES=entities:read,instances:read`.
+    # Scopes válidos: ver teleflow/gateway/auth.py
+    teleflow_api_key_scopes: str = "*"
+    # Las demás keys viven en la tabla `api_keys` (una por integración, hasheadas).
+    # El TTL del cache es también la ventana máxima que sobrevive una key revocada.
+    api_key_cache_ttl: int = 30
 
     # URLs internas entre servicios
     parser_url: str = "http://parser-service:8001"
@@ -35,6 +43,19 @@ class Settings(BaseSettings):
     timer_scan_interval: int = 60
     domain_cache_ttl: int = 30
     events_exchange: str = "teleflow.domain.events"
+
+    # Bus de eventos: reintentos antes de mandar el evento a la DLQ (<queue>.dlq).
+    # La cola lleva sufijo de versión: cambiar sus argumentos (x-dead-letter-exchange)
+    # sobre una cola ya declarada da PRECONDITION_FAILED en RabbitMQ.
+    rules_queue: str = "teleflow.rules.v1"
+    event_max_attempts: int = 3
+    event_retry_base_delay: float = 1.0
+
+    # Reintentos de steps: cuántos los decide el DSL (`retries:` del step); acá van
+    # los tiempos. Backoff exponencial con full jitter, topeado a max_delay.
+    # Solo se reintentan errores transitorios (5xx/408/429/timeout/red).
+    step_retry_base_delay: float = 1.0
+    step_retry_max_delay: float = 30.0
 
     # Gateway
     rate_limit_rpm: int = 120

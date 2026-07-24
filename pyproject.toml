@@ -44,7 +44,16 @@ include = ["teleflow*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "e2e: tests end-to-end contra el stack levantado (requieren docker compose up)",
+]
 
 [tool.mypy]
 strict = true
 python_version = "3.11"
+
+# networkx no publica tipos compatibles con py3.11 (sus stubs arrastran numpy
+# con sintaxis 3.12). Se trata como sin-tipos; el uso local es acotado.
+[[tool.mypy.overrides]]
+module = "networkx.*"
+ignore_missing_imports = true

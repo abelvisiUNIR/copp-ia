@@ -1,6 +1,7 @@
 """Modelos SQLAlchemy — schema de la sección 9.4 del documento de arquitectura."""
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     Boolean,
@@ -31,7 +32,7 @@ class FlowDefinition(Base):
     name: Mapped[str] = mapped_column(String(200), index=True)
     version: Mapped[str] = mapped_column(String(50))
     source: Mapped[str] = mapped_column(Text)
-    ast: Mapped[dict] = mapped_column(JSONType)
+    ast: Mapped[dict[str, Any]] = mapped_column(JSONType)
     checksum: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(30), default="registered")
     created_at: Mapped[datetime] = mapped_column(
@@ -57,10 +58,10 @@ class ProcessInstance(Base):
     flow_version: Mapped[str] = mapped_column(String(50))
     correlation_id: Mapped[str | None] = mapped_column(String(200), index=True, nullable=True)
     status: Mapped[str] = mapped_column(String(30), index=True, default="TRIGGERED")
-    trigger_payload: Mapped[dict] = mapped_column(JSONType, default=dict)
-    context: Mapped[dict] = mapped_column(JSONType, default=dict)
+    trigger_payload: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    context: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
     current_step: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    error: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    error: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -79,7 +80,7 @@ class InstanceTransition(Base):
     from_status: Mapped[str] = mapped_column(String(30))
     to_status: Mapped[str] = mapped_column(String(30))
     step_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    step_output: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    step_output: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
     actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -96,7 +97,7 @@ class EntityState(Base):
     entity_type: Mapped[str] = mapped_column(String(100), index=True)
     entity_id: Mapped[str] = mapped_column(String(100))
     estado: Mapped[str] = mapped_column(String(50))
-    campos: Mapped[dict] = mapped_column(JSONType, default=dict)
+    campos: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -110,7 +111,7 @@ class EntityEvent(Base):
     entity_type: Mapped[str] = mapped_column(String(100))
     entity_id: Mapped[str] = mapped_column(String(100))
     event_name: Mapped[str] = mapped_column(String(200), index=True)
-    payload: Mapped[dict] = mapped_column(JSONType, default=dict)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
@@ -124,7 +125,7 @@ class RelationState(Base):
     from_id: Mapped[str] = mapped_column(String(100), index=True)
     to_id: Mapped[str] = mapped_column(String(100), index=True)
     estado: Mapped[str] = mapped_column(String(50))
-    campos: Mapped[dict] = mapped_column(JSONType, default=dict)
+    campos: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -142,7 +143,7 @@ class SignalRecord(Base):
     step_name: Mapped[str] = mapped_column(String(200))
     signal: Mapped[str] = mapped_column(String(100))
     actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    signal_data: Mapped[dict] = mapped_column(JSONType, default=dict)
+    signal_data: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
     signal_key: Mapped[str | None] = mapped_column(String(200), unique=True, nullable=True)
     processed: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -161,7 +162,7 @@ class FlowDraft(Base):
     source: Mapped[str] = mapped_column(Text)
     base_source: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
-    comments: Mapped[list] = mapped_column(JSONType, default=list)
+    comments: Mapped[list[Any]] = mapped_column(JSONType, default=list)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -183,4 +184,28 @@ class RuleTimerLog(Base):
     subject_key: Mapped[str] = mapped_column(String(300))
     fired_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ApiKey(Base):
+    """Credencial de una integración: sus permisos y su identidad.
+
+    Se guarda **solo el hash** (SHA-256): la key en claro se muestra una única vez, al
+    crearla. SHA-256 y no bcrypt/argon2 a propósito: las keys son secretos aleatorios de
+    alta entropía generados por el sistema, no contraseñas humanas — no hay nada que
+    adivinar por fuerza bruta, y el hash se verifica en **cada request**.
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(200), unique=True)  # identidad, para auditoría
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    scopes: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )

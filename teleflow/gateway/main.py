@@ -6,18 +6,28 @@ routing hacia los servicios core. Los clientes solo conocen este endpoint.
 Deploy de un flow: POST /flows/{name}
   gateway → parser-service (valida) → registry-service (persiste)
 """
+import secrets
 import time
+import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from fastapi.security import APIKeyHeader
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from teleflow.common.config import get_settings
+from teleflow.common.config import Settings, get_settings
+from teleflow.common.db import get_sessionmaker, init_db
 from teleflow.common.logging import setup_logging
+from teleflow.common.models import ApiKey
 from teleflow.common.observability import setup_observability
+from teleflow.gateway import auth
 
 log = setup_logging("api-gateway")
 
@@ -27,14 +37,20 @@ client: httpx.AsyncClient | None = None
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global client
     client = httpx.AsyncClient(timeout=60.0)
+    init_db(get_settings())   # las API keys viven en Postgres (tabla api_keys)
     yield
     await client.aclose()
 
 
-app = FastAPI(title="TeleFlow API Gateway", version="1.0.0", lifespan=lifespan)
+# Declara el esquema de auth en OpenAPI para que Swagger muestre "Authorize" y
+# envíe el header. auto_error=False: la validación real la hace el middleware.
+api_key_scheme = APIKeyHeader(name="X-TeleFlow-API-Key", auto_error=False)
+
+app = FastAPI(title="TeleFlow API Gateway", version="1.0.0", lifespan=lifespan,
+              dependencies=[Depends(api_key_scheme)])
 setup_observability(app, "api-gateway")
 
 
@@ -62,20 +78,116 @@ _buckets: dict[str, TokenBucket] = {}
 
 @app.middleware("http")
 async def auth_and_rate_limit(request: Request, call_next):  # type: ignore[no-untyped-def]
+    """Autentica (¿quién es esta key?) y limita. La **autorización** por scope la hace cada
+    ruta con `Depends(require(...))`: el permiso depende del endpoint, no de la key sola."""
     if request.url.path in PUBLIC_PATHS or request.method == "OPTIONS":
         return await call_next(request)
     settings = get_settings()
     api_key = request.headers.get("X-TeleFlow-API-Key", "")
-    if api_key != settings.teleflow_api_key:
+
+    identidad = await resolver_identidad(api_key, settings)
+    if identidad is None:
         return JSONResponse(status_code=401, content={"detail": "API key inválida"})
+
     bucket = _buckets.setdefault(api_key, TokenBucket(settings.rate_limit_rpm))
     if not bucket.allow():
         return JSONResponse(status_code=429,
                             content={"detail": "Rate limit excedido"})
+
+    request.state.identidad = identidad
     return await call_next(request)
 
 
+# ------------------------------------------------------ resolución de la key
+
+# hash de la key -> (identidad, vence_en). Evita ir a la DB en cada request.
+_cache_keys: dict[str, tuple[auth.Identidad, float]] = {}
+
+
+def purgar_cache(key_hash: str) -> None:
+    """Saca una key del cache **ya**, sin esperar el TTL.
+
+    Sin esto, una key revocada seguiría entrando hasta `api_key_cache_ttl` segundos — que es
+    justo lo que no se quiere de una credencial filtrada.
+
+    Límite conocido: purga el cache **de este proceso**. Con varias réplicas del gateway, las
+    demás siguen aceptando la key hasta que su propio TTL venza (≤ `api_key_cache_ttl`). Para
+    revocación inmediata cross-réplica haría falta invalidación por Redis pub/sub (el executor
+    ya usa ese patrón para las señales).
+    """
+    _cache_keys.pop(key_hash, None)
+
+
+@lru_cache
+def get_bootstrap_scopes() -> frozenset[str]:
+    """Scopes de la key global de env. Un scope mal escrito revienta acá, explícito."""
+    return auth.parse_scopes(get_settings().teleflow_api_key_scopes)
+
+
+async def resolver_identidad(api_key: str, settings: Settings) -> auth.Identidad | None:
+    """Key de env (bootstrap) o key de la DB. `None` = inválida, revocada o inexistente.
+
+    La de bootstrap se resuelve **sin tocar la DB**: si Postgres está caído o la migración
+    no corrió, el operador no queda afuera de su propia plataforma.
+    """
+    if not api_key:
+        return None
+    if secrets.compare_digest(api_key, settings.teleflow_api_key):
+        return auth.Identidad(name=auth.BOOTSTRAP_KEY_NAME,
+                              scopes=get_bootstrap_scopes())
+
+    hashed = auth.hash_key(api_key)
+    cacheada = _cache_keys.get(hashed)
+    if cacheada is not None and cacheada[1] > time.monotonic():
+        return cacheada[0]
+
+    try:
+        async with get_sessionmaker()() as session:
+            identidad = await auth.resolver_key(session, api_key)
+            if identidad is not None:
+                await session.execute(
+                    update(ApiKey).where(ApiKey.id == identidad.key_id)
+                    .values(last_used_at=func.now()))
+                await session.commit()
+    except (SQLAlchemyError, OSError) as exc:
+        # la DB no responde (OSError = conexión rechazada, no la envuelve SQLAlchemy):
+        # no se puede afirmar que la key sea válida -> 401, nunca un 500 con stack.
+        # La key de bootstrap sigue andando: el operador no queda afuera.
+        log.error("api_key_lookup_failed", error=str(exc))
+        return None
+
+    if identidad is None:
+        _cache_keys.pop(hashed, None)
+        return None
+    _cache_keys[hashed] = (identidad,
+                           time.monotonic() + settings.api_key_cache_ttl)
+    return identidad
+
+
 # ----------------------------------------------------------------- helpers
+
+class UpstreamDown(Exception):
+    """Un servicio core no respondió: se traduce a 502, nunca a un 500 con stack."""
+
+    def __init__(self, base_url: str, exc: Exception):
+        self.base_url = base_url
+        super().__init__(str(exc))
+
+
+def _bad_gateway(base_url: str) -> JSONResponse:
+    return JSONResponse(status_code=502,
+                        content={"detail": f"Servicio no disponible: {base_url}"})
+
+
+async def _post_upstream(base_url: str, path: str,
+                         payload: dict[str, Any]) -> httpx.Response:
+    """POST a un servicio core. `RequestError` (conexión, timeout, DNS) → UpstreamDown."""
+    assert client is not None
+    try:
+        return await client.post(f"{base_url}{path}", json=payload)
+    except httpx.RequestError as exc:
+        raise UpstreamDown(base_url, exc) from exc
+
 
 async def _proxy(request: Request, base_url: str, path: str) -> Response:
     assert client is not None
@@ -88,11 +200,119 @@ async def _proxy(request: Request, base_url: str, path: str) -> Response:
             params=dict(request.query_params),
             headers={"Content-Type": "application/json"} if body else {},
         )
-    except httpx.ConnectError:
-        return JSONResponse(status_code=502,
-                            content={"detail": f"Servicio no disponible: {base_url}"})
+    except httpx.RequestError:  # conexión rechazada, timeout, DNS
+        return _bad_gateway(base_url)
     return Response(content=upstream.content, status_code=upstream.status_code,
                     media_type=upstream.headers.get("content-type", "application/json"))
+
+
+# --------------------------------------------------------- gestión de keys
+
+class CrearKeyRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)   # identidad, p.ej. "integracion-ceibal"
+    scopes: list[str]
+
+
+@app.post("/keys", status_code=201,
+          dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
+async def crear_key(req: CrearKeyRequest) -> Response:
+    """Crea una key con permisos acotados. El secreto se devuelve **una sola vez**."""
+    try:
+        scopes = auth.parse_scopes(",".join(req.scopes))
+    except auth.UnknownScopeError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+    secreto = auth.generar_key()
+    fila = ApiKey(name=req.name, key_hash=auth.hash_key(secreto),
+                  scopes=sorted(scopes), active=True)
+    try:
+        async with get_sessionmaker()() as session:
+            session.add(fila)
+            await session.commit()
+            key_id = fila.id
+    except IntegrityError:
+        return JSONResponse(status_code=409,
+                            content={"detail": f"ya existe una key '{req.name}'"})
+
+    log.info("api_key_created", key_name=req.name, scopes=sorted(scopes))
+    return JSONResponse(status_code=201, content={
+        "id": str(key_id),
+        "name": req.name,
+        "scopes": sorted(scopes),
+        "key": secreto,   # única vez que se ve: solo se guarda el hash
+        "aviso": "guardá esta key ahora: no se puede volver a mostrar",
+    })
+
+
+@app.delete("/keys/{key_id}", dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
+async def revocar_key(key_id: uuid.UUID) -> Response:
+    """Revoca una key (`active=False`) y la saca del cache **sin reiniciar el stack**.
+
+    No se borra la fila: la identidad se conserva para la auditoría (qué hizo esa key).
+    """
+    async with get_sessionmaker()() as session:
+        fila = await session.get(ApiKey, key_id)
+        if fila is None:
+            return JSONResponse(status_code=404, content={"detail": "key no encontrada"})
+        if not fila.active:
+            return JSONResponse(status_code=409,
+                                content={"detail": f"la key '{fila.name}' ya está revocada"})
+        fila.active = False
+        key_hash, name = fila.key_hash, fila.name
+        await session.commit()
+
+    purgar_cache(key_hash)
+    log.info("api_key_revoked", key_name=name, key_id=str(key_id))
+    return JSONResponse(content={"id": str(key_id), "name": name, "active": False})
+
+
+@app.post("/keys/{key_id}/rotate",
+          dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
+async def rotar_key(key_id: uuid.UUID) -> Response:
+    """Genera un secreto nuevo para la misma identidad y scopes. El viejo deja de valer ya.
+
+    Rotar (no revocar + crear) mantiene el `name`, así la auditoría no se corta al cambiar
+    el secreto.
+    """
+    secreto = auth.generar_key()
+    async with get_sessionmaker()() as session:
+        fila = await session.get(ApiKey, key_id)
+        if fila is None:
+            return JSONResponse(status_code=404, content={"detail": "key no encontrada"})
+        if not fila.active:
+            return JSONResponse(
+                status_code=409,
+                content={"detail": f"la key '{fila.name}' está revocada: no se rota"})
+        hash_viejo = fila.key_hash
+        fila.key_hash = auth.hash_key(secreto)
+        name, scopes = fila.name, [str(s) for s in fila.scopes]
+        await session.commit()
+
+    purgar_cache(hash_viejo)   # el secreto viejo deja de entrar en el acto
+    log.info("api_key_rotated", key_name=name, key_id=str(key_id))
+    return JSONResponse(content={
+        "id": str(key_id),
+        "name": name,
+        "scopes": scopes,
+        "key": secreto,
+        "aviso": "guardá esta key ahora: la anterior ya no sirve",
+    })
+
+
+@app.get("/keys", dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
+async def listar_keys() -> Response:
+    """Lista las credenciales. Nunca devuelve secretos ni hashes."""
+    async with get_sessionmaker()() as session:
+        filas = (await session.execute(
+            select(ApiKey).order_by(ApiKey.created_at))).scalars().all()
+    return JSONResponse(content=[{
+        "id": str(f.id),
+        "name": f.name,
+        "scopes": [str(s) for s in f.scopes],
+        "active": f.active,
+        "created_at": f.created_at.isoformat() if f.created_at else None,
+        "last_used_at": f.last_used_at.isoformat() if f.last_used_at else None,
+    } for f in filas])
 
 
 # ------------------------------------------------------- deploy de flows
@@ -103,14 +323,16 @@ class DeployRequest(BaseModel):
     description: str = ""
 
 
-@app.post("/flows/{name}")
+@app.post("/flows/{name}", dependencies=[Depends(auth.require(auth.FLOWS_DEPLOY))])
 async def deploy_flow(name: str, req: DeployRequest) -> Response:
     """Valida en parser-service y persiste en registry-service."""
-    assert client is not None
     settings = get_settings()
-    parse_response = await client.post(
-        f"{settings.parser_url}/parse", json={"source": req.source, "name": name}
-    )
+    try:
+        parse_response = await _post_upstream(
+            settings.parser_url, "/parse", {"source": req.source, "name": name})
+    except UpstreamDown as down:
+        return _bad_gateway(down.base_url)
+
     if parse_response.status_code != 200:
         return Response(content=parse_response.content,
                         status_code=parse_response.status_code,
@@ -122,16 +344,20 @@ async def deploy_flow(name: str, req: DeployRequest) -> Response:
             "issues": parsed["issues"],
         })
 
-    register_response = await client.post(
-        f"{settings.registry_url}/flows/{name}",
-        json={
-            "source": req.source,
-            "version": req.version,
-            "description": req.description,
-            "ast": parsed["ast"],
-            "checksum": parsed["checksum"],
-        },
-    )
+    try:
+        register_response = await _post_upstream(
+            settings.registry_url, f"/flows/{name}",
+            {
+                "source": req.source,
+                "version": req.version,
+                "description": req.description,
+                "ast": parsed["ast"],
+                "checksum": parsed["checksum"],
+            },
+        )
+    except UpstreamDown as down:
+        return _bad_gateway(down.base_url)
+
     if register_response.status_code >= 400:
         return Response(content=register_response.content,
                         status_code=register_response.status_code,
@@ -142,24 +368,26 @@ async def deploy_flow(name: str, req: DeployRequest) -> Response:
     return JSONResponse(status_code=201, content=result)
 
 
-@app.post("/parse")
+@app.post("/parse", dependencies=[Depends(auth.require(auth.FLOWS_READ))])
 async def parse_only(request: Request) -> Response:
+    """Solo valida: no persiste nada, por eso alcanza con flows:read."""
     return await _proxy(request, get_settings().parser_url, "/parse")
 
 
 # -------------------------------------------------------- routing registry
 
-@app.get("/flows")
+@app.get("/flows", dependencies=[Depends(auth.require(auth.FLOWS_READ))])
 async def list_flows(request: Request) -> Response:
     return await _proxy(request, get_settings().registry_url, "/flows")
 
 
-@app.get("/flows/{name}")
+@app.get("/flows/{name}", dependencies=[Depends(auth.require(auth.FLOWS_READ))])
 async def flow_versions(request: Request, name: str) -> Response:
     return await _proxy(request, get_settings().registry_url, f"/flows/{name}")
 
 
-@app.get("/flows/{name}/{version}")
+@app.get("/flows/{name}/{version}",
+         dependencies=[Depends(auth.require(auth.FLOWS_READ))])
 async def flow_version(request: Request, name: str, version: str) -> Response:
     return await _proxy(request, get_settings().registry_url,
                         f"/flows/{name}/{version}")
@@ -167,58 +395,70 @@ async def flow_version(request: Request, name: str, version: str) -> Response:
 
 # -------------------------------------------------------- routing executor
 
-@app.post("/execute")
+@app.post("/execute", dependencies=[Depends(auth.require(auth.INSTANCES_TRIGGER))])
 async def execute(request: Request) -> Response:
     return await _proxy(request, get_settings().executor_url, "/execute")
 
 
-@app.get("/instances")
+@app.get("/instances", dependencies=[Depends(auth.require(auth.INSTANCES_READ))])
 async def instances(request: Request) -> Response:
     return await _proxy(request, get_settings().executor_url, "/instances")
 
 
-@app.get("/instances/{instance_id}")
+@app.get("/instances/{instance_id}",
+         dependencies=[Depends(auth.require(auth.INSTANCES_READ))])
 async def instance(request: Request, instance_id: str) -> Response:
     return await _proxy(request, get_settings().executor_url,
                         f"/instances/{instance_id}")
 
 
-@app.post("/instances/{instance_id}/signal")
+@app.post("/instances/{instance_id}/signal",
+          dependencies=[Depends(auth.require(auth.INSTANCES_SIGNAL))])
 async def signal(request: Request, instance_id: str) -> Response:
     return await _proxy(request, get_settings().executor_url,
                         f"/instances/{instance_id}/signal")
 
 
-@app.post("/instances/{instance_id}/retry")
+@app.post("/instances/{instance_id}/retry",
+          dependencies=[Depends(auth.require(auth.INSTANCES_RETRY))])
 async def retry(request: Request, instance_id: str) -> Response:
     return await _proxy(request, get_settings().executor_url,
                         f"/instances/{instance_id}/retry")
 
 
-@app.api_route("/entities/{rest:path}",
-               methods=["GET", "POST", "PATCH"])
+_ENTITY_SCOPES = {"GET": auth.ENTITIES_READ,      # incluye la vista 360
+                  "POST": auth.ENTITIES_WRITE,
+                  "PATCH": auth.ENTITIES_WRITE}
+
+
+@app.api_route("/entities/{rest:path}", methods=["GET", "POST", "PATCH"],
+               dependencies=[Depends(auth.require_por_metodo(_ENTITY_SCOPES))])
 async def entities(request: Request, rest: str) -> Response:
     return await _proxy(request, get_settings().executor_url, f"/entities/{rest}")
 
 
-@app.api_route("/relations/{rest:path}",
-               methods=["GET", "POST", "PATCH"])
+@app.api_route("/relations/{rest:path}", methods=["GET", "POST", "PATCH"],
+               dependencies=[Depends(auth.require_por_metodo(_ENTITY_SCOPES))])
 async def relations(request: Request, rest: str) -> Response:
     return await _proxy(request, get_settings().executor_url, f"/relations/{rest}")
 
 
 # -------------------------------------------------------- routing composer
 
-@app.api_route("/compose", methods=["POST"])
+@app.api_route("/compose", methods=["POST"],
+               dependencies=[Depends(auth.require(auth.COMPOSE_WRITE))])
 async def compose(request: Request) -> Response:
     return await _proxy(request, get_settings().composer_url, "/compose")
 
 
-@app.api_route("/drafts", methods=["GET"])
+@app.api_route("/drafts", methods=["GET"],
+               dependencies=[Depends(auth.require(auth.COMPOSE_READ))])
 async def drafts(request: Request) -> Response:
     return await _proxy(request, get_settings().composer_url, "/drafts")
 
 
-@app.api_route("/drafts/{rest:path}", methods=["GET", "POST"])
+@app.api_route("/drafts/{rest:path}", methods=["GET", "POST"],
+               dependencies=[Depends(auth.require_por_metodo(
+                   {"GET": auth.COMPOSE_READ, "POST": auth.COMPOSE_WRITE}))])
 async def draft_ops(request: Request, rest: str) -> Response:
     return await _proxy(request, get_settings().composer_url, f"/drafts/{rest}")

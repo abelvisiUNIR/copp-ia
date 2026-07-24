@@ -10,7 +10,7 @@ from typing import Any, Union
 
 # ----------------------------------------------------------- expresiones
 
-ExprValue = Union[str, int, float, bool, None, list, "Expr"]
+ExprValue = Union[str, int, float, bool, None, "list[Any]", "Expr"]
 
 
 @dataclass
@@ -307,6 +307,11 @@ class FlowFile:
     integrations: dict[str, IntegrationDef] = field(default_factory=dict)
     catalogs: dict[str, CatalogDef] = field(default_factory=dict)
     parties: dict[str, PartyDef] = field(default_factory=dict)
+    # Nombres declarados más de una vez en el mismo archivo (categoría, nombre).
+    # Metadato transitorio de parseo: no forma parte del AST serializado.
+    duplicates: list[tuple[str, str]] = field(
+        default_factory=list, compare=False, metadata={"transient": True}
+    )
 
     def merge(self, other: "FlowFile") -> "FlowFile":
         """Combina dos archivos de dominio (último gana por nombre)."""

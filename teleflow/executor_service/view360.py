@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import false, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from teleflow.common.logging import get_logger
@@ -17,7 +17,7 @@ from teleflow.common.models import (
     ProcessInstance,
     RelationState,
 )
-from teleflow.dsl.ast_nodes import View360Def
+from teleflow.dsl.ast_nodes import RelationDef, View360Def
 from teleflow.dsl.evaluator import evaluate
 from teleflow.executor_service.domain import DomainLoader
 from teleflow.executor_service.entities import DomainError
@@ -74,7 +74,8 @@ class View360Service:
                 return view
         return views.get(entity_type)
 
-    async def _build_relations(self, session: AsyncSession, domain, view,
+    async def _build_relations(self, session: AsyncSession, domain: Any,
+                               view: View360Def | None,
                                entity_type: str, entity_id: str) -> list[dict[str, Any]]:
         rel_types = ([vr.relation.target for vr in view.relations]
                      if view and view.relations
@@ -114,13 +115,13 @@ class View360Service:
                 results.append(item)
         return results
 
-    def _is_terminal(self, rel_def, estado: str) -> bool:
+    def _is_terminal(self, rel_def: RelationDef | None, estado: str) -> bool:
         if rel_def is None or rel_def.lifecycle is None:
             return False
         outgoing = {t.from_state for t in rel_def.lifecycle.transitions}
         return estado not in outgoing
 
-    async def _build_processes(self, session: AsyncSession, view,
+    async def _build_processes(self, session: AsyncSession, view: View360Def | None,
                                entity_type: str, entity_id: str) -> list[dict[str, Any]]:
         query = select(ProcessInstance).where(
             ProcessInstance.status.in_(ACTIVE_STATUSES))
@@ -143,7 +144,7 @@ class View360Service:
             })
         return out
 
-    async def _build_timeline(self, session: AsyncSession, view,
+    async def _build_timeline(self, session: AsyncSession, view: View360Def | None,
                               entity_type: str, entity_id: str,
                               relations: list[dict[str, Any]]) -> list[dict[str, Any]]:
         limit = view.timeline.limit if view and view.timeline else 50
@@ -152,7 +153,7 @@ class View360Service:
         query = select(EntityEvent).where(or_(
             (EntityEvent.entity_type == entity_type)
             & (EntityEvent.entity_id == entity_id),
-            EntityEvent.entity_id.in_(rel_ids) if rel_ids else False,
+            EntityEvent.entity_id.in_(rel_ids) if rel_ids else false(),
         ))
         query = query.order_by(
             EntityEvent.occurred_at.desc() if order_desc
@@ -164,7 +165,9 @@ class View360Service:
             "detalle": row.payload.get("detalle", ""),
         } for row in rows]
 
-    async def _build_alerts(self, domain, view, relations, entity) -> list[dict[str, Any]]:
+    async def _build_alerts(self, domain: Any, view: View360Def | None,
+                            relations: list[dict[str, Any]],
+                            entity: EntityState) -> list[dict[str, Any]]:
         if view is None or not view.alerts:
             return []
         alerts: list[dict[str, Any]] = []
@@ -202,6 +205,9 @@ class View360Service:
                                        + (f" ({detalle})" if detalle else ""),
                         })
                         break
-                except Exception:
+                except Exception as exc:
+                    # la alerta no se pudo evaluar: sin log, la 360 diría "todo bien"
+                    # cuando en realidad no sabemos.
+                    log.warning("alert_not_evaluable", rule=rule.name, error=str(exc))
                     continue
         return alerts

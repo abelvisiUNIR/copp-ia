@@ -11,3 +11,12 @@ build/
 node_modules/
 review-ui/dist/
 .DS_Store
+
+# Estado local de Obsidian (UI/workspace) — no se versiona
+wiki/.obsidian/
+wiki/Untitled.base
+
+# Capa transitoria del vault: diario, checkpoints y work-streams son personales.
+# Al repo compartido solo va wiki/Knowledge/ (ADRs, roadmap, guías).
+wiki/Journal/
+wiki/templates/
