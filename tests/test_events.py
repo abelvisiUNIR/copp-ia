@@ -3,19 +3,26 @@
 Sin broker: se usa un mensaje falso que registra ack/reject, como haría aio_pika.
 `retry_base_delay=0` para que el backoff no duerma de verdad.
 """
+from typing import cast
+
 import pytest
+from aio_pika.abc import AbstractExchange, AbstractIncomingMessage
 
 from teleflow.executor_service.events import EventBus
 
 
 class FakeMessage:
-    """Mínimo de aio_pika.abc.AbstractIncomingMessage que usa handle_message."""
+    """Mínimo de aio_pika.abc.AbstractIncomingMessage que usa handle_message.
+
+    Se pasa a `handle_message` con un `cast`: implementa lo que el bus usa (body,
+    routing_key, ack, reject) y no la interfaz entera de aio_pika.
+    """
 
     def __init__(self, body: bytes, routing_key: str = "nino.inscrito"):
         self.body = body
         self.routing_key = routing_key
         self.acked = False
-        self.rejected_requeue = None  # None = nunca rechazado
+        self.rejected_requeue: bool | None = None  # None = nunca rechazado
 
     async def ack(self):
         self.acked = True
@@ -39,7 +46,7 @@ async def test_handle_message_ok_ackea():
     async def callback(routing_key, payload):
         recibidos.append((routing_key, payload))
 
-    await bus.handle_message("q", message, callback)
+    await bus.handle_message("q", cast(AbstractIncomingMessage, message), callback)
 
     assert recibidos == [("nino.inscrito", {"event": "nino.inscrito"})]
     assert message.acked is True
@@ -57,7 +64,7 @@ async def test_handle_message_falla_transitoria_se_recupera():
         if len(intentos) == 1:
             raise RuntimeError("DB caída un segundo")
 
-    await bus.handle_message("q", message, callback)
+    await bus.handle_message("q", cast(AbstractIncomingMessage, message), callback)
 
     assert len(intentos) == 2
     assert message.acked is True
@@ -74,7 +81,7 @@ async def test_handle_message_falla_siempre_va_a_la_dlq():
         intentos.append(1)
         raise RuntimeError("rule rota")
 
-    await bus.handle_message("q", message, callback)
+    await bus.handle_message("q", cast(AbstractIncomingMessage, message), callback)
 
     assert len(intentos) == 3                    # reintentó max_attempts veces
     assert message.acked is False                # el evento NO se descarta en silencio
@@ -90,7 +97,7 @@ async def test_handle_message_body_ilegible_va_directo_a_la_dlq():
     async def callback(routing_key, payload):
         llamadas.append(1)
 
-    await bus.handle_message("q", message, callback)
+    await bus.handle_message("q", cast(AbstractIncomingMessage, message), callback)
 
     assert llamadas == []
     assert message.acked is False
@@ -108,7 +115,7 @@ async def test_handle_message_cancelled_no_se_traga():
     import asyncio
 
     with pytest.raises(asyncio.CancelledError):
-        await bus.handle_message("q", message, callback)
+        await bus.handle_message("q", cast(AbstractIncomingMessage, message), callback)
 
     assert message.acked is False
     assert message.rejected_requeue is None
@@ -119,7 +126,7 @@ async def test_handle_message_cancelled_no_se_traga():
 class FakeExchange:
     def __init__(self, fallos: int):
         self.fallos = fallos
-        self.publicados = []
+        self.publicados: list[str] = []
 
     async def publish(self, message, routing_key):
         if self.fallos > 0:
@@ -131,7 +138,7 @@ class FakeExchange:
 async def test_publish_reintenta_y_sale_bien():
     bus = make_bus(max_attempts=3)
     exchange = FakeExchange(fallos=2)
-    bus._exchange = exchange
+    bus._exchange = cast(AbstractExchange, exchange)
 
     await bus.publish("nino.inscrito", {"event": "nino.inscrito"})
 
@@ -142,7 +149,7 @@ async def test_publish_agotado_no_tumba_el_flujo():
     """Degradación controlada (ADR-004): si el broker no vuelve, se loguea y sigue."""
     bus = make_bus(max_attempts=3)
     exchange = FakeExchange(fallos=99)
-    bus._exchange = exchange
+    bus._exchange = cast(AbstractExchange, exchange)
 
     await bus.publish("nino.inscrito", {"event": "nino.inscrito"})  # no levanta
 

@@ -29,7 +29,7 @@ def test_toda_ruta_declara_operation_id_explicito() -> None:
     En el documento `operationId` siempre viene relleno (FastAPI lo autogenera si falta), así
     que chequearlo ahí no probaría nada. En la ruta, `operation_id` es `None` si no se declaró.
     """
-    sin_id = [f"{sorted(r.methods)} {r.path}" for r in app.routes
+    sin_id = [f"{sorted(r.methods or [])} {r.path}" for r in app.routes
               if isinstance(r, APIRoute) and r.include_in_schema and r.operation_id is None]
     assert not sin_id, f"rutas sin operation_id explícito: {sin_id}"
 

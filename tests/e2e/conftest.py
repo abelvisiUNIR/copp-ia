@@ -81,7 +81,7 @@ def poll_status(
         for _ in range(tries):
             r = await client.get(f"/instances/{instance_id}")
             r.raise_for_status()
-            data = r.json()
+            data: dict[str, Any] = r.json()
             last = data["status"]
             if last == expect:
                 return data

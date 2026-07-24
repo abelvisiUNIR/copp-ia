@@ -27,16 +27,16 @@ def collector() -> BusinessMetricsCollector:
     return BusinessMetricsCollector(None, Settings())  # type: ignore[arg-type]
 
 
-def backlog(flow: str, step: str) -> float | None:
-    return HUMAN_TASK_BACKLOG.labels(flow, step)._value.get()
+def backlog(flow: str, step: str) -> float:
+    return float(HUMAN_TASK_BACKLOG.labels(flow, step)._value.get())
 
 
-def esperando_hace(flow: str, step: str) -> float | None:
-    return HUMAN_TASK_OLDEST_SECONDS.labels(flow, step)._value.get()
+def esperando_hace(flow: str, step: str) -> float:
+    return float(HUMAN_TASK_OLDEST_SECONDS.labels(flow, step)._value.get())
 
 
-def vivas(flow: str, status: str) -> float | None:
-    return INSTANCES_CURRENT.labels(flow, status)._value.get()
+def vivas(flow: str, status: str) -> float:
+    return float(INSTANCES_CURRENT.labels(flow, status)._value.get())
 
 
 def waiting(step: str, count: int, minutos: int = 0) -> InstanceGroup:

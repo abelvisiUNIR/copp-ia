@@ -3,9 +3,12 @@
 Cubre los 4 arreglos: rules (el evento llega a la DLQ), invariantes (un typo se ve),
 alertas de la 360 (se loguean) y flows corruptos (quedan expuestos en el dominio).
 """
+from typing import cast
+
 import pytest
 
 from teleflow.dsl.ast_nodes import EntityDef, RuleDef
+from teleflow.executor_service.domain import DomainLoader
 from teleflow.executor_service.entities import INVARIANTS_SKIPPED, EntityService
 from teleflow.executor_service.rules import RuleEngine, RuleFireError
 
@@ -27,8 +30,9 @@ class _FakeLoader:
 
 def make_rule_engine(rules) -> RuleEngine:
     engine = RuleEngine.__new__(RuleEngine)          # sin DB ni broker
-    engine._domain = _FakeLoader(rules)              # type: ignore[attr-defined]
-    engine._ya_disparadas = {}                       # type: ignore[attr-defined]
+    # El loader falso implementa solo `load()`, que es lo único que el rule engine usa acá.
+    engine._domain = cast(DomainLoader, _FakeLoader(rules))
+    engine._ya_disparadas = {}
     return engine
 
 
@@ -116,7 +120,7 @@ def check_invariants(invariants, campos, estado="ACTIVO"):
 
 
 def _skipped(reason: str) -> float:
-    return INVARIANTS_SKIPPED.labels("nino", reason)._value.get()
+    return float(INVARIANTS_SKIPPED.labels("nino", reason)._value.get())
 
 
 def test_invariante_con_typo_queda_expuesto():
