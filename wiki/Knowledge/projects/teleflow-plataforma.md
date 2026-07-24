@@ -96,6 +96,34 @@ Tablas clave: `flow_definitions` (inmutable, `UNIQUE(name,version)`), `flow_late
 inmutable, fuente de view360 y on_timer), `relation_state`, `flow_drafts`, `rule_timer_log`
 (`UNIQUE(rule_name, subject_key)` → evita doble disparo de on_timer).
 
+## Observabilidad (hecho — `copp-ia@devyos@4c9feb2`)
+
+Prometheus scrapea `/metrics` de los 5 servicios cada 15 s (`teleflow/common/observability.py`
+instala el middleware, `/health` y `/ready` en cada app). Grafana provisiona dos dashboards
+desde el repo (`observability/grafana/dashboards/`): **TeleFlow · Overview** (técnico:
+requests, p95, error rate, throughput de steps) y **TeleFlow · Negocio** (trabajo pendiente).
+
+Las métricas son de **dos clases y no se mezclan**:
+
+- **Counters de eventos** — `teleflow_http_requests_total`, `teleflow_instances_total`
+  (instancias por estado **final**), `teleflow_steps_total`, `teleflow_events_consumed_total`
+  / `_published_total`, `teleflow_invariants_skipped_total`, `teleflow_domain_parse_failures_total`.
+  Miden lo que ya pasó, en el momento en que pasa.
+- **Gauges de estado actual** — `teleflow_instances_current{flow_name,status}`,
+  `teleflow_human_task_backlog{flow_name,step_name}`,
+  `teleflow_human_task_oldest_seconds{...}`, `teleflow_domain_broken_flows`. Los primeros tres
+  los recalcula `BusinessMetricsCollector` (`executor_service/business_metrics.py`) agregando
+  `process_instances` cada `BUSINESS_METRICS_INTERVAL` (30 s), solo sobre estados vivos.
+
+El **backlog de human_tasks** — cuántas instancias esperan señal en cada step y hace cuánto —
+es la métrica de negocio central y solo un gauge puede darla: un counter describe el pasado.
+Ver [[2026-07-24-metricas-de-negocio-gauges]].
+
+**Gotcha de deploy:** los dashboards viven en `/etc/grafana/dashboards`, **fuera** de
+`/var/lib/grafana` (ahí monta el volumen `grafana-data`, y Docker copia el contenido de la
+imagen al volumen solo cuando lo crea vacío: un dashboard nuevo nunca llegaría a una
+instalación existente). Ver [[fallas-silenciosas]].
+
 ## Stack (hecho — sección 10)
 
 Python 3.11, FastAPI+uvicorn, SQLAlchemy 2 async+asyncpg, Alembic, Pydantic v2,
