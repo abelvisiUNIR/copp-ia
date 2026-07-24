@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     worker_concurrency: int = 10
     timer_scan_interval: int = 60
     domain_cache_ttl: int = 30
+    # Cada cuánto se recalculan los gauges de negocio (instancias vivas, backlog de
+    # human_tasks). Es una agregación sobre el working set de `process_instances`, no sobre
+    # toda la historia. Prometheus scrapea cada 15 s: bajar de eso no agrega resolución.
+    business_metrics_interval: int = 30
     events_exchange: str = "teleflow.domain.events"
 
     # Bus de eventos: reintentos antes de mandar el evento a la DLQ (<queue>.dlq).

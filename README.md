@@ -142,6 +142,29 @@ tflow openapi --output otro/lado.json
 
 Sale del código (importa la app), así que **no hace falta el stack levantado**. Cada ruta declara `operation_id` y `tags` explícitos, para que un cliente generado tenga nombres estables: si se renombra la función Python, el método del cliente no cambia.
 
+## Observabilidad
+
+Prometheus (`:9090`) scrapea `/metrics` de los 5 servicios cada 15 s. Grafana (`:3001`) trae
+dos dashboards provisionados en la carpeta *TeleFlow*:
+
+| Dashboard | Responde |
+|---|---|
+| **TeleFlow · Overview** | Salud técnica: requests, latencia p95, tasa de error, throughput de steps |
+| **TeleFlow · Negocio** | Trabajo pendiente: backlog de human_tasks por step y su antigüedad, procesos en curso por estado, terminados por hora |
+
+Las métricas de negocio son de dos clases y no se mezclan:
+
+- **Counters de eventos** (`teleflow_instances_total`, `teleflow_steps_total`): cuentan lo que
+  ya pasó, en el momento en que pasa.
+- **Gauges de estado actual** (`teleflow_instances_current`, `teleflow_human_task_backlog`,
+  `teleflow_human_task_oldest_seconds`): los recalcula un scanner del executor cada
+  `BUSINESS_METRICS_INTERVAL` (30 s) agregando `process_instances`. Un counter no puede
+  responder "¿cuánta gente tiene trabajo pendiente ahora?" — para eso están estos.
+
+Los gauges cubren solo los estados **vivos** (`TRIGGERED`, `IN_PROGRESS`, `RETRYING`,
+`WAITING_SIGNAL`): los terminales ya los cuenta `teleflow_instances_total` y agregarlos
+obligaría a escanear toda la historia de la tabla en cada ciclo.
+
 ## Doc vs. código: discrepancias conocidas
 
 La doc consolidada (`.md` y PDF en `docs/`) es más vieja que los `.typ` y que el código. **Ante conflicto, el orden de verdad es: código > `.typ` > `.md`/README.**

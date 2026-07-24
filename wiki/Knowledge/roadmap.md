@@ -89,8 +89,13 @@ Combinado y en este orden de madurez:
   familia de acción), una key por integración (tabla `api_keys`, hasheadas SHA-256, con
   identidad para auditoría), y **revocación/rotación sin reiniciar el stack**. La key de env
   queda como bootstrap. **TLS interno: pendiente** (va con Fase E, hardening).
-- **Observabilidad de negocio:** confirmar/crear dashboards Grafana (backlog `human_task`,
-  procesos por estado) que la doc menciona.
+- [x] **Observabilidad de negocio (hecho 2026-07-24 → `observabilidad-negocio`):** gauges de
+  estado actual publicados por un scanner del executor (`teleflow_instances_current`,
+  `teleflow_human_task_backlog`, `teleflow_human_task_oldest_seconds`) y dashboard
+  **TeleFlow · Negocio** provisionado. Antes solo había counters de eventos: ninguna métrica
+  respondía "cuánto trabajo hay pendiente ahora". De paso se arregló que **ningún dashboard
+  nuevo llegaba a una instalación existente** (el volumen `grafana-data` tapaba
+  `/var/lib/grafana/dashboards` de la imagen).
 - **DSL:** mejores mensajes de error del parser; validación semántica extra (refs a
   process/step inexistentes en `validator.py`).
 - [x] **DX (hecho 2026-07-19 → `limpieza-dx-openapi`):** las 19 rutas del gateway declaran
