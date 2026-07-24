@@ -30,6 +30,8 @@ la promoción de uno a otro es deliberada, nunca automática).
   no instalar `types-networkx` (rompe por numpy 3.12 vs target 3.11).
 - [[2026-07-14-clasificacion-errores-integracion]] — (wiki/executor) el adapter clasifica
   transitorio vs permanente; el engine solo reintenta lo transitorio, con full jitter.
+- [[2026-07-24-alcance-mypy]] — (wiki/tooling) `mypy .` cubre el repo entero y es el mismo
+  comando en CI y en la doc; los tests se chequean sin exigirles anotaciones de firma.
 - [[2026-07-24-metricas-de-negocio-gauges]] — (wiki/observabilidad) el estado actual
   (backlog de human_tasks, procesos vivos) va en gauges agregados por SQL desde
   `process_instances`; los counters miden eventos y no responden sobre el presente.

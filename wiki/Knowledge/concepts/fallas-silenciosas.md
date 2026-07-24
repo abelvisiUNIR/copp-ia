@@ -74,6 +74,15 @@ propósito el nombre de una métrica (tiene que fallar) — porque un test vacuo
 fallar nunca es, él mismo, otra falla silenciosa. Ya había aparecido uno así en
 `limpieza-dx-openapi`.
 
+## Qué NO es una falla silenciosa
+No todo lo que se pasa por alto entra acá, y forzar el encaje hace perder el patrón. Caso real
+(`saneamiento-comando-tipado`, 2026-07-24): `mypy .` no chequeaba **ni un archivo**, pero
+fallaba con **exit code 2** — gritaba. Lo que estaba oculto no era el fallo sino la
+**divergencia** entre el comando documentado y el que gateaba los merges, que hacía razonable
+convivir con el error. Fix distinto, entonces: no un corte donde no lo había, sino un test que
+compare las dos fuentes ([[2026-07-24-alcance-mypy]]). Antes de aplicar este patrón, medir:
+¿el mecanismo calla, o avisa y el problema es otro?
+
 ## Sources
 Work-streams `except-swallow-audit` (2026-07-14), `limpieza-dx-openapi` (2026-07-19),
 `observabilidad-negocio` (2026-07-24) · [[2026-07-14-clasificacion-errores-integracion]]
