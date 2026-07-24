@@ -1,7 +1,7 @@
 """Que el comando de type checking documentado y el que corre CI sean el mismo.
 
-Durante 12 días CI corrió `mypy teleflow` mientras el README y `.claude/CLAUDE.md` decían
-`mypy .`. El comando documentado fallaba —exit code 2, `Duplicate module named "conftest"`—
+Durante 12 días CI corrió `mypy teleflow` mientras el README decía `mypy .`.
+El comando documentado fallaba —exit code 2, `Duplicate module named "conftest"`—
 por un motivo que se lee como un problema de herramientas, no de código; y el atajo natural
 (correr el de CI, que pasa) dejaba los tests sin chequear sin que eso se notara nunca.
 """

@@ -13,8 +13,8 @@ tags: [adr, mypy, tipado, calidad, ci, tooling]
 > ADR-001..005): es una decisión del equipo sobre la red de seguridad del repo.
 
 ## Context
-El README y `.claude/CLAUDE.md` mandaban `mypy .`; CI (`.github/workflows/ci.yml`) corría
-`mypy teleflow`. No era lo mismo:
+El README (y las guías internas del repo) mandaban `mypy .`; CI (`.github/workflows/ci.yml`)
+corría `mypy teleflow`. No era lo mismo:
 
 - **`mypy .` fallaba** con exit code 2:
   `Duplicate module named "conftest" (also at ".\tests\e2e\conftest.py")` seguido de
