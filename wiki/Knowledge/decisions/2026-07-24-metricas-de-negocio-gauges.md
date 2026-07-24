@@ -2,13 +2,13 @@
 project: copp-ia
 date: 2026-07-24
 status: accepted
-provenance: copp-ia@devyos@4c9feb2
+provenance: copp-ia@devyos@1305d99
 tags: [adr, observabilidad, prometheus, grafana, executor, negocio]
 ---
 
 # ADR (wiki): las métricas de negocio de estado actual son gauges agregados desde la DB
 
-> Provenance: `copp-ia@devyos@4c9feb2` (commits `f4b1acd` + `6e537a9`). Decisión tomada
+> Provenance: `copp-ia@devyos@1305d99` (commits `c7b3682` + `eacc05d`). Decisión tomada
 > durante el work-stream `observabilidad-negocio` (Fase D). **No** es un ADR del arquitecto
 > (los suyos son ADR-001..005): es una decisión del equipo sobre cómo se mide el negocio.
 

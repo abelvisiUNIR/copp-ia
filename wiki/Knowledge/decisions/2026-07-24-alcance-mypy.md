@@ -2,13 +2,13 @@
 project: copp-ia
 date: 2026-07-24
 status: accepted
-provenance: copp-ia@devyos@450c922
+provenance: copp-ia@devyos@3120c7b
 tags: [adr, mypy, tipado, calidad, ci, tooling]
 ---
 
 # ADR (wiki): qué cubre el type check y qué se le exige a cada parte del repo
 
-> Provenance: `copp-ia@devyos@450c922` (commit `5df23ab`). Decisión tomada durante el
+> Provenance: `copp-ia@devyos@3120c7b` (commit `f85c007`). Decisión tomada durante el
 > work-stream `saneamiento-comando-tipado`. **No** es un ADR del arquitecto (los suyos son
 > ADR-001..005): es una decisión del equipo sobre la red de seguridad del repo.
 

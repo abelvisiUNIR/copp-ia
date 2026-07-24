@@ -1,7 +1,7 @@
 ---
 project: copp-ia
 type: concept
-provenance: copp-ia@devyos@4c9feb2
+provenance: copp-ia@devyos@1305d99
 created: 2026-07-24
 updated: 2026-07-24
 tags: [concepto, calidad, resiliencia, observabilidad, patron]
@@ -9,7 +9,7 @@ tags: [concepto, calidad, resiliencia, observabilidad, patron]
 
 # Fallas silenciosas — el patrón que más veces apareció en este proyecto
 
-> Provenance: `copp-ia@devyos@4c9feb2`. Sintetizado de tres work-streams distintos
+> Provenance: `copp-ia@devyos@1305d99`. Sintetizado de tres work-streams distintos
 > (`except-swallow-audit`, `limpieza-dx-openapi`, `observabilidad-negocio`) que encontraron
 > el mismo problema con tres caras distintas.
 
@@ -26,9 +26,9 @@ semanas o meses en el repo antes de encontrarse, y ninguno se encontró por un t
 
 | # | Dónde | Qué parecía | Qué pasaba | Fix |
 |---|---|---|---|---|
-| 1 | `rules.py`, `entities.py`, `view360.py`, `domain.py` | `except Exception` que loguea y sigue = manejo de errores | El evento se ACKeaba igual → la DLQ recién construida nunca recibía nada; un invariante con typo nunca se aplicaba (sin un solo log): un organismo podía correr meses creyendo que validaba | `2647198` (`except-swallow-audit`) |
-| 2 | `gateway/main.py` | `operation_id` explícito en todas las rutas = contrato estable | `api_route(methods=[...])` con varios métodos hacía que todas las operaciones heredaran el **mismo** id; FastAPI avisa por `UserWarning` y **no falla**, así que el contrato roto se exportaba igual | `9ae7212` (`limpieza-dx-openapi`) |
-| 3 | `observability/grafana.Dockerfile` | dashboards versionados en el repo = dashboards en Grafana | Los dashboards se copiaban a `/var/lib/grafana`, donde monta el volumen `grafana-data`; Docker copia la imagen al volumen **solo cuando lo crea vacío**, así que en toda instalación existente el volumen viejo tapaba la imagen nueva. El dashboard simplemente no aparecía | `6e537a9` (`observabilidad-negocio`) |
+| 1 | `rules.py`, `entities.py`, `view360.py`, `domain.py` | `except Exception` que loguea y sigue = manejo de errores | El evento se ACKeaba igual → la DLQ recién construida nunca recibía nada; un invariante con typo nunca se aplicaba (sin un solo log): un organismo podía correr meses creyendo que validaba | `ef7af86` (`except-swallow-audit`) |
+| 2 | `gateway/main.py` | `operation_id` explícito en todas las rutas = contrato estable | `api_route(methods=[...])` con varios métodos hacía que todas las operaciones heredaran el **mismo** id; FastAPI avisa por `UserWarning` y **no falla**, así que el contrato roto se exportaba igual | `97698fe` (`limpieza-dx-openapi`) |
+| 3 | `observability/grafana.Dockerfile` | dashboards versionados en el repo = dashboards en Grafana | Los dashboards se copiaban a `/var/lib/grafana`, donde monta el volumen `grafana-data`; Docker copia la imagen al volumen **solo cuando lo crea vacío**, así que en toda instalación existente el volumen viejo tapaba la imagen nueva. El dashboard simplemente no aparecía | `eacc05d` (`observabilidad-negocio`) |
 
 ## La forma común
 En los tres, el mecanismo de aviso existía y **no cortaba**:

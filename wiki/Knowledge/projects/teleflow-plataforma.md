@@ -96,7 +96,7 @@ Tablas clave: `flow_definitions` (inmutable, `UNIQUE(name,version)`), `flow_late
 inmutable, fuente de view360 y on_timer), `relation_state`, `flow_drafts`, `rule_timer_log`
 (`UNIQUE(rule_name, subject_key)` → evita doble disparo de on_timer).
 
-## Observabilidad (hecho — `copp-ia@devyos@4c9feb2`)
+## Observabilidad (hecho — `copp-ia@devyos@1305d99`)
 
 Prometheus scrapea `/metrics` de los 5 servicios cada 15 s (`teleflow/common/observability.py`
 instala el middleware, `/health` y `/ready` en cada app). Grafana provisiona dos dashboards
