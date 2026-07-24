@@ -103,6 +103,7 @@ kubectl scale deployment \\
       ("LLM_BASE_URL",        "No",  "—",                  "Para Ollama: http://host:11434"),
       ("WORKER_CONCURRENCY",  "No",  "10",                 "Semáforo del executor: instancias concurrentes"),
       ("TIMER_SCAN_INTERVAL", "No",  "60",                 "Segundos entre escaneos del rule engine on_timer"),
+      ("BUSINESS_METRICS_INTERVAL", "No", "30",            "Segundos entre recálculos de los gauges de negocio (backlog de human_tasks)"),
       ("RATE_LIMIT_RPM",      "No",  "120",                "Requests por minuto por API key en el gateway"),
       ("GRAFANA_PORT",        "No",  "3001",               "Puerto del host para Grafana (default 3001, no 3000)"),
       ("GRAFANA_PASSWORD",    "No",  "admin",              "Password del admin de Grafana"),
