@@ -126,10 +126,12 @@ tests/               pytest (parser, validador, evaluador, DAG)
 python -m venv .venv && .venv\Scripts\activate
 pip install -e .[dev]
 pytest
-mypy teleflow
+mypy .          # todo el repo, igual que CI
 ```
 
 Convenciones: tipado estricto, Pydantic v2 en la API, dataclasses en el AST, structlog con `instance_id`/`flow_name`/`step_name`, pytest-asyncio, Alembic.
+
+`mypy .` cubre el repo entero (58 archivos) y es exactamente lo que corre CI. A los tests **no** se les exigen anotaciones de firma (`[tool.mypy.overrides]` en `pyproject.toml`): lo que se busca ahí es que un cambio de firma en `teleflow/` rompa el type check de sus tests, no anotar 350 funciones de test.
 
 Los tests e2e (`tests/e2e/`) requieren el stack levantado; si el gateway no responde **se saltan**, así `pytest` sigue verde sin Docker.
 

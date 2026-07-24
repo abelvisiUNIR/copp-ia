@@ -52,8 +52,33 @@ markers = [
 strict = true
 python_version = "3.11"
 
+# Sin esto, `mypy .` aborta con "Duplicate module named conftest" (tests/ y tests/e2e/ tienen
+# uno cada uno) y —lo importante— **no chequea nada**: sale con un solo error y un
+# "errors prevented further checking" que se lee como si hubiera pasado. Los paths se
+# resuelven desde la raíz del repo, así que los dos conftest son módulos distintos.
+explicit_package_bases = true
+mypy_path = "."
+
 # networkx no publica tipos compatibles con py3.11 (sus stubs arrastran numpy
 # con sintaxis 3.12). Se trata como sin-tipos; el uso local es acotado.
 [[tool.mypy.overrides]]
 module = "networkx.*"
 ignore_missing_imports = true
+
+# Los tests se chequean, pero no se les exige anotar cada función: anotar ~350 firmas de test
+# es ruido mecánico y no encuentra nada. Lo que sí queda cubierto —y es el motivo de
+# incluirlos— es que un cambio de firma en `teleflow/` rompa el type check de sus tests.
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+
+# Script suelto de la raíz (genera diagramas para docs/, viene del commit inicial): no es
+# código del producto y no se importa desde `teleflow/`. Mismo trato que los tests — se
+# chequea, pero no se le exigen anotaciones.
+[[tool.mypy.overrides]]
+module = "gen_excalidraw"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
