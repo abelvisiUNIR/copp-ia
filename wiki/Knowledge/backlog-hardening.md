@@ -63,7 +63,10 @@ cuando alguien ya pisó una versión en producción.
 `cli.py` queda anotado acá.)
 
 ## 3. El rate limit es por proceso — y es la segunda vez que aparece el mismo supuesto
-**Estado:** abierto · **Prioridad:** media (decisión), baja (implementación)
+**Estado:** ✅ **cerrado 2026-07-25** ([[estado-compartido-gateway]], `007e4a7` + el chunk del
+rate limit) — contador en Redis y revocación por pub/sub, las dos verificadas con **dos
+réplicas reales**. Ver [[2026-07-25-estado-compartido-gateway]]. · **Prioridad original:**
+media (decisión), baja (implementación)
 
 **Hecho.** `gateway/main.py:92` — `_buckets` es un dict en memoria del proceso. Con N réplicas
 del gateway el límite efectivo es N × `rate_limit_rpm`. Es **el mismo límite** ya anotado
@@ -97,7 +100,8 @@ idempotencia con instancias ya creadas en producción obliga a decidir qué hace
 duplicados que ya existen.
 
 ## 5. `review-ui`: el componente con más poder y menos cobertura
-**Estado:** abierto · **Prioridad:** media
+**Estado:** ✅ **cerrado 2026-07-25** ([[review-ui-tests]], `a816b93`) — 8 tests de Playwright
+sobre el camino crítico, corriendo en el job e2e de CI. · **Prioridad original:** media
 
 **Hecho.** 266 líneas en 4 archivos (`App.jsx` 186, `api.js` 43, `diff.js` 31, `main.jsx` 6).
 Cero tests, sin lint. CI solo buildea la imagen Python (`ci.yml:78-84`); el front se construye
@@ -109,7 +113,10 @@ gateway). Es la superficie donde un error tiene el mayor radio de daño y la ún
 seguridad.
 
 ## 6. Backup/restore probado — separarlo y adelantarlo de Fase E
-**Estado:** abierto · **Prioridad:** media (subir antes de producción)
+**Estado:** ✅ **cerrado 2026-07-25** ([[estado-durable]]) — `scripts/backup.sh` y
+`restore.sh` con el viaje de ida y vuelta probado por e2e, más el volumen y el `hostname`
+fijo de RabbitMQ (la DLQ se perdía con `up --build`). Ver [[2026-07-25-que-se-respalda]]. ·
+**Prioridad original:** media
 
 **Hecho.** `roadmap.md:113` lo lista dentro de Fase E, junto a Helm en k8s, HPA, StatefulSets
 en HA y runbooks.
@@ -119,7 +126,8 @@ arreglo posible**. Un `pg_dump` + restore verificado por un test vale hoy más q
 charts, y no depende de tener k8s.
 
 ## 7. `review-ui` se buildea sin lockfile — el bundle no es reproducible
-**Estado:** abierto · **Prioridad:** media-baja
+**Estado:** ✅ **cerrado 2026-07-25** (`2e9630c`) — lockfile versionado, `npm ci` en el
+`Dockerfile` y `.dockerignore`. · **Prioridad original:** media-baja
 
 **Hecho.** `review-ui/package.json` declara rangos flotantes (`react: ^18.3.1`,
 `vite: ^5.3.1`) y **no hay `package-lock.json` versionado**. El `Dockerfile` hace
@@ -147,16 +155,23 @@ segundo no cambia nada.
 
 ## Orden propuesto
 1. ~~Auditoría persistida (1)~~ ✅ · ~~Tests del registry (2)~~ ✅ — ambos hechos 2026-07-25.
-2. ~~Idempotencia de `/execute` (4)~~ ✅ **hecha 2026-07-25**. Queda el **ADR de estado
-   compartido del gateway (3)**, que sigue abaratándose por decidirlo temprano.
-3. **Antes de Fase E:** backup/restore (6), la red de seguridad de `review-ui` (5) y el
-   lockfile del front (7).
+2. ~~Idempotencia de `/execute` (4)~~ ✅ · ~~Estado compartido del gateway (3)~~ ✅ — ambos
+   hechos 2026-07-25.
+3. ~~`review-ui` (5)~~ ✅ · ~~lockfile del front (7)~~ ✅ · ~~backup/restore (6)~~ ✅ — hechos
+   2026-07-25.
+
+**Los 7 ítems están cerrados.** Lo que siga sale del [[roadmap]] (Fase E) o de una revisión
+transversal nueva, no de esta lista.
 
 ## Hallazgos laterales, todavía abiertos
-- **Postgres no se publica al host** en `docker-compose.yml`. No es un bug —es más seguro— pero
-  hace que cualquier test que toque la base pague ~4 s en conexiones fallidas antes de darse
-  cuenta. Descubierto al implementar la auditoría; resuelto ahí con un sink en memoria, pero el
-  próximo que escriba un test con DB se lo va a encontrar de nuevo.
+- **Ni Postgres ni Redis se publican al host** en `docker-compose.yml`. No es un bug —es más
+  seguro— pero hace que cualquier test que toque una de las dos pague **~2-4 s por intento de
+  conexión**. Mordió **dos veces el mismo día**: la suite se fue de 22 s a 73 s al agregar la
+  auditoría, y de 27 s a **137 s** al agregar Redis al gateway. Las dos veces se resolvió con
+  un doble inerte en `conftest.py` (`_SesionFalsa`, `_RedisInerte`).
+  **Regla que sale de acá:** al agregarle al gateway una dependencia de I/O, sumarla al fixture
+  `sink_auditoria` en el mismo commit — si no, la próxima persona pierde media hora buscando
+  por qué la suite se arrastra.
 - **La API del registry no valida que `version` sea semver.** `banana` se registra y queda al
   fondo del orden (hay un test que lo fija). Rechazarlo es un cambio de contrato que rompería
   instalaciones con versiones libres, así que se documenta en vez de cortarlo — pero si alguna

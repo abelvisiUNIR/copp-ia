@@ -13,6 +13,9 @@ la promoción de uno a otro es deliberada, nunca automática).
 ## Páginas
 
 - [[roadmap]] — **guía de desarrollo** por fases (aprender → CI → calidad → mejoras → producción).
+- [[2026-07-25-notas-de-actualizacion]] — **para el equipo antes de pullear** lo del 25/7:
+  tres migraciones, el `.env` que puede impedir arrancar el composer, y `up --build` por el
+  volumen de RabbitMQ.
 - [[backlog-hardening]] — huecos concretos con evidencia (auditoría, registry sin tests, rate
   limit por proceso, `/execute` sin idempotencia, `review-ui`, backup/restore).
 
@@ -37,6 +40,9 @@ la promoción de uno a otro es deliberada, nunca automática).
 - [[2026-07-24-metricas-de-negocio-gauges]] — (wiki/observabilidad) el estado actual
   (backlog de human_tasks, procesos vivos) va en gauges agregados por SQL desde
   `process_instances`; los counters miden eventos y no responden sobre el presente.
+- [[2026-07-25-estado-compartido-gateway]] — (wiki/gateway, **proposed**) el rate limit y el
+  cache de keys pasan a Redis: el chart ya declara `replicas: 2` y el código asume un solo
+  proceso.
 - [[2026-07-25-auditoria-persistida]] — (wiki/gateway, **proposed**) se audita toda escritura
   y todo intento denegado, sin guardar el cuerpo; el registro se engancha en `auth.require`
   para que ninguna ruta nueva quede afuera.

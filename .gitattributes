@@ -1,0 +1,8 @@
+# Los scripts de shell van SIEMPRE con finales de línea LF, en cualquier plataforma.
+#
+# En Windows, git los estaba dejando con CRLF al hacer checkout, y bash interpreta el `\r`
+# como parte del token: `set -euo pipefail` fallaba con
+# "set: pipefail: invalid option name". El script terminaba con error y el respaldo no se
+# hacía. En Linux no se nota, así que sin esto el problema aparece solo en las máquinas de
+# desarrollo y no en CI.
+*.sh text eol=lf

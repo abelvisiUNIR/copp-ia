@@ -158,6 +158,39 @@ tflow openapi --output otro/lado.json
 
 Sale del código (importa la app), así que **no hace falta el stack levantado**. Cada ruta declara `operation_id` y `tags` explícitos, para que un cliente generado tenga nombres estables: si se renombra la función Python, el método del cliente no cambia.
 
+### Respaldo y restauración
+
+**Postgres es lo único que hay que respaldar**: es el único estado que el producto no puede reconstruir. Redis es cache y coordinación, los dashboards viven en la imagen, y las colas son trabajo en vuelo (ver el ADR *qué se respalda*).
+
+```bash
+scripts/backup.sh                                   # -> backups/teleflow-YYYYmmdd-HHMMSS.dump
+scripts/restore.sh backups/teleflow-....dump teleflow_verificacion
+```
+
+Se respalda con la base **arriba**: `pg_dump -Fc` toma una instantánea consistente sin bloquear escrituras. Parar el servicio convertiría el respaldo en una interrupción, y un respaldo que cuesta una ventana de mantenimiento se corre menos seguido.
+
+`restore.sh` **exige la base destino** y no tiene default: restaurar es la operación que destruye datos. Sobre la base en uso pide `--confirmar`.
+
+**El viaje de ida y vuelta está probado** (`tests/e2e/test_backup_restore_e2e.py`): escribe un dato reconocible, respalda, restaura en otra base y lo busca ahí. Un backup sin restore probado no es un respaldo, es un archivo.
+
+**La rotación y el destino remoto quedan fuera**: dónde se guardan los dumps y por cuánto tiempo depende de la infraestructura y el marco normativo de cada organismo.
+
+### Rate limit compartido entre réplicas
+
+El límite (`RATE_LIMIT_RPM`, 120 por defecto) se cuenta **en Redis**, no en cada proceso: con `replicas: 2` el límite efectivo era el doble del configurado, porque cada réplica llevaba su propio contador. Ventana fija por minuto y por key, con la key **hasheada** (Redis no es lugar para una credencial, ni en el nombre de una clave); las entradas expiran solas.
+
+**Si Redis no responde, el gateway degrada al contador en memoria** —lo de antes: limita por proceso— y lo cuenta en `teleflow_rate_limit_degraded_total`. Esa es la métrica a alertar: mientras suba, el límite vuelve a ser N× con N réplicas.
+
+Costo medido: **+0,6 ms** sobre un request de ~7 ms (300 muestras por lado), dentro de la variación entre corridas.
+
+### Revocación de credenciales con varias réplicas
+
+Revocar o rotar una key la corta **en el acto y en todas las réplicas del gateway**, sin esperar el TTL del cache (`API_KEY_CACHE_TTL`, 30 s por defecto). El `DELETE` solo pasa por una réplica; las demás se enteran por un anuncio en Redis (canal `teleflow:keys:revocadas`) y purgan su cache local.
+
+**Sin Redis el gateway funciona igual**, degradado: la purga local sigue andando y el TTL vuelve a ser el techo. Esa degradación no es silenciosa — se cuenta en `teleflow_key_revocations_unpublished_total`, que es la métrica a alertar: mientras suba, una credencial revocada puede seguir entrando hasta 30 s por réplica.
+
+El chart declara `replicas: 2` para el gateway (`helm/teleflow/values.yaml`), así que esto **no es hipotético**.
+
 ### Auditoría
 
 Toda acción de **escritura** y **todo intento denegado** (401/403/429, incluso de lectura) queda registrado en la tabla `audit_log`: quién, qué, sobre qué, cuándo y con qué resultado. Las lecturas exitosas no se registran, salvo la lectura de la auditoría misma.

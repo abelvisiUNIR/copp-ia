@@ -1,7 +1,7 @@
 ---
 project: copp-ia
 type: concept
-provenance: copp-ia@devyos@b6c7668
+provenance: copp-ia@devyos@3db6cd3
 created: 2026-07-24
 updated: 2026-07-25
 tags: [concepto, calidad, resiliencia, observabilidad, patron]
@@ -9,10 +9,11 @@ tags: [concepto, calidad, resiliencia, observabilidad, patron]
 
 # Fallas silenciosas — el patrón que más veces apareció en este proyecto
 
-> Provenance: `copp-ia@devyos@b6c7668`. Sintetizado de siete work-streams distintos
+> Provenance: `copp-ia@devyos@3db6cd3`. Sintetizado de **nueve** work-streams distintos
 > (`except-swallow-audit`, `limpieza-dx-openapi`, `observabilidad-negocio`,
-> `composer-llm-hardening`, `auditoria-persistida`, `registry-cobertura`, `idempotencia-execute`) que encontraron el
-> mismo problema con caras distintas.
+> `composer-llm-hardening`, `auditoria-persistida`, `registry-cobertura`,
+> `idempotencia-execute`, `review-ui-tests`, `estado-durable`) que encontraron el mismo
+> problema con caras distintas.
 
 ## Qué es
 Un mecanismo que **parece** estar protegiendo algo y no lo está, y que cuando falla **no
@@ -33,6 +34,7 @@ meses en el repo antes de encontrarse, y ninguno se encontró por un test.
 | 4 | `composer_service/providers.py` | `LLM_PROVIDER=anthropic` = borradores generados por un modelo | Sin credencial, `get_provider` logueaba un `warning` y devolvía el `stub`: `/compose` respondía **201** y el analista recibía un esqueleto con `TODO:` creyendo que lo escribió el modelo. Peor, el log registraba el proveedor *pedido*, así que **la única traza decía lo contrario de lo que pasó**. Un typo en la variable caía al mismo lugar sin ni siquiera el warning | `fa479cb` (`composer-llm-hardening`) |
 | 5 | `composer_service/providers.py` | HTTP 200 = respuesta utilizable | Un rechazo por políticas del modelo llega con **200**, `stop_reason: refusal` y `content: []`; una respuesta cortada por límite de tokens llega con **200** y un `.tflow` a la mitad. La primera reventaba con un `IndexError` reportado como "error del proveedor"; la segunda se guardaba como borrador | `5d89f94` (`composer-llm-hardening`) |
 | 6 | `gateway/main.py` | un middleware que registra al final = registra siempre | El 500 lo arma un middleware de **Starlette** que envuelve a los de la app: una excepción no atrapada salta por encima del middleware propio, `call_next` propaga y el código que sigue nunca corre. Un deploy que crasheaba a mitad de camino no dejaba registro de auditoría — el intento más interesante de todos | `982f12b` (`auditoria-persistida`) |
+| 9 | `docker-compose.yml` | colas `durable=True` + mensajes `PERSISTENT` = la DLQ sobrevive | El servicio `rabbitmq` no tenía volumen, así que `/var/lib/rabbitmq` vivía en la capa escribible del contenedor: la DLQ sobrevivía a un `restart` y **se vaciaba con `up --build`**, el comando del README. Y las colas reaparecían (las declara la app), así que el operador veía la DLQ en **0** — que se lee como "no hubo fallas". Agregar el volumen **no alcanzó**: el nombre del nodo (`mnesia/rabbit@$HOSTNAME`) dependía del ID del contenedor, así que cada recreación estrenaba un nodo y dejaba el anterior huérfano dentro del volumen | `estado-durable` |
 | 8 | `gateway/main.py` | mandar `Idempotency-Key` = estar protegido | El proxy arma los headers **desde cero** (correcto: evita colar headers del exterior a los servicios internos), así que el header estándar del cliente no llegaba al executor. El gateway respondía 202 y no había ninguna deduplicación: el cliente creía estar protegido de los reintentos y no lo estaba | `b6c7668` (`idempotencia-execute`) |
 | 7 | `registry_service/main.py` | `latest` apunta a la versión mayor | `_semver_key` quitaba los no-dígitos de cada chunk, así que el `1` de `rc1` se sumaba al patch: `1.0.0-rc1` → `(1,0,1)`, **mayor** que `1.0.0`. Registrar un candidato después del estable movía `latest` al candidato y el executor disparaba procesos de negocio con él. El 201 llegaba igual y el pointer apuntaba a algo que existía | `4c7ce34` (`registry-cobertura`) |
 
@@ -62,6 +64,12 @@ Dos variantes que conviene tener presentes, porque no se buscan igual:
   del framework envuelve a los de la aplicación, así que "esto corre al final de cada request"
   es falso justo para los requests que fallan. Vale para cualquier middleware que registre,
   mida o limpie algo. La única forma de verlo es **probar el camino de excepción explícito**.
+- **Una garantía declarada arriba se puede perder abajo — y en más de una capa** (#9). El
+  código de eventos declaraba todo bien (exchanges y colas durables, mensajes persistentes) y
+  la DLQ se vaciaba igual porque faltaba el volumen. Puesto el volumen, **seguía perdiéndose**,
+  porque el nombre del nodo dependía del ID del contenedor. Cada capa se veía correcta por
+  separado: solo medir el resultado final —publicar, recrear, contar— lo mostró. Cuando algo se
+  declara durable, la pregunta es **dónde termina el byte**, no qué dice la declaración.
 - **Una función que nunca falla puede estar corrompiendo un orden** (#7). `_semver_key`
   aceptaba cualquier string y siempre devolvía una tupla: esa tolerancia *era* el bug, porque
   el `1` de `rc1` terminaba sumado al número de patch. No hay excepción que atrapar ni log que
@@ -117,6 +125,14 @@ Al tocar algo que promete una garantía, preguntarse las cuatro:
    una ruta nueva queda cubierta sin que su autor haga nada. Y como complemento, un test que
    **obligue a decidir**: que la clasificación de scopes sea exhaustiva, para que uno nuevo no
    pueda quedar afuera por omisión. Automático no alcanza; hay que cerrar el hueco por defecto.
+
+**Un test vacuo es peor que no tener test**, porque desactiva la sospecha: el ítem queda
+marcado como cubierto. En [[review-ui-tests]] hicieron falta **tres intentos** para que el test
+de una regresión visual fallara con el defecto puesto — las dos primeras versiones pasaban
+igual, y solo midiendo la geometría en el navegador se entendió por qué (el estado no era el
+que rompía, el nombre no tenía el largo justo, y la assertion miraba lo que no era: el pill
+partido **igual queda dentro** de la tarjeta; lo que lo delata es que el navegador lo renderiza
+como dos cajas).
 
 Y al escribir el test que lo fija: **verificarlo con una mutación**. En
 `observabilidad-negocio` el test de contrato dashboards↔métricas se comprobó rompiendo a
