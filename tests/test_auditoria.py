@@ -149,6 +149,9 @@ def test_un_intento_cortado_por_rate_limit_deja_constancia(client, monkeypatch,
     agotado.tokens = 0.0
     agotado.rate = 0.0
     c = client("*")
+    # Sin Redis, el limitador cae al bucket del proceso: es el camino que este test necesita
+    # forzar, y lo que importa acá es que el 429 quede auditado, no cómo se decidió.
+    monkeypatch.setitem(main.state, "redis", None)
     monkeypatch.setitem(main._buckets, KEY, agotado)
 
     r = c.post("/flows/x", headers=H, json={"source": "a", "version": "1.0.0"})

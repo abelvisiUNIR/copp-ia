@@ -100,7 +100,46 @@ class TokenBucket:
         return False
 
 
+#: Buckets por proceso. Dejaron de ser el mecanismo principal —ahora el contador vive en
+#: Redis y lo comparten todas las réplicas— pero se conservan como red de seguridad para
+#: cuando Redis no está: limitar por proceso protege menos que limitar de verdad, y muchísimo
+#: más que no limitar.
 _buckets: dict[str, TokenBucket] = {}
+
+RATE_LIMIT_DEGRADADO = Counter(
+    "teleflow_rate_limit_degraded_total",
+    "Requests limitados por proceso porque Redis no respondió",
+)
+
+
+async def permite_el_limite(api_key: str, settings: Settings) -> bool:
+    """Ventana fija por minuto, compartida entre réplicas.
+
+    `INCR` + `EXPIRE` y no token bucket: el bucket necesita leer-modificar-escribir con estado
+    propio, que en Redis pide script Lua o transacción. La ventana fija son dos comandos y
+    ningún estado que mantener; a 120 rpm el suavizado en los bordes no cambia nada práctico.
+
+    La key va **hasheada**: Redis no es lugar para una credencial, ni siquiera como parte del
+    nombre de una clave.
+    """
+    redis = state.get("redis")
+    if redis is not None:
+        ventana = int(time.time() // 60)
+        clave = f"ratelimit:{auth.hash_key(api_key)}:{ventana}"
+        try:
+            usados = await redis.incr(clave)
+            if usados == 1:
+                # Dos ventanas de vida: la clave se limpia sola y sobrevive al borde.
+                await redis.expire(clave, 120)
+            return bool(usados <= settings.rate_limit_rpm)
+        except Exception as exc:
+            # Un limitador caído no puede convertirse en una caída del producto. Se degrada al
+            # bucket del proceso —lo que había antes— y **se cuenta**: si nadie mira este
+            # contador, el límite vuelve a ser N× con N réplicas sin que se entere nadie.
+            RATE_LIMIT_DEGRADADO.inc()
+            log.error("rate_limit_redis_failed", error=str(exc))
+
+    return _buckets.setdefault(api_key, TokenBucket(settings.rate_limit_rpm)).allow()
 
 
 @app.middleware("http")
@@ -116,8 +155,7 @@ async def auth_and_rate_limit(request: Request, call_next):  # type: ignore[no-u
     if identidad is None:
         return JSONResponse(status_code=401, content={"detail": "API key inválida"})
 
-    bucket = _buckets.setdefault(api_key, TokenBucket(settings.rate_limit_rpm))
-    if not bucket.allow():
+    if not await permite_el_limite(api_key, settings):
         return JSONResponse(status_code=429,
                             content={"detail": "Rate limit excedido"})
 

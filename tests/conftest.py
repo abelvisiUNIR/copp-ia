@@ -54,13 +54,60 @@ class _ResultadoVacio:
         return []
 
 
+class _RedisInerte:
+    """Redis que no hace nada. El gateway lo usa para invalidar el cache de keys entre
+    réplicas y para el rate limit; en los tests unitarios no hay Redis (el compose no publica
+    el puerto) y cada intento de conexión costaba ~2 s.
+
+    `incr` devuelve 1 siempre: en los tests unitarios nunca se busca el límite, y quien lo
+    prueba de verdad inyecta su propio doble.
+    """
+
+    async def publish(self, canal, dato):
+        return 0
+
+    async def incr(self, clave):
+        return 1
+
+    async def expire(self, clave, segundos):
+        return True
+
+    async def aclose(self):
+        return None
+
+    def pubsub(self):
+        return self
+
+    async def subscribe(self, *canales):
+        return None
+
+    async def get_message(self, **kwargs):
+        import asyncio
+
+        await asyncio.sleep(3600)  # nunca llega nada; la tarea se cancela al cerrar
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
 @pytest.fixture
 def sink_auditoria(monkeypatch):
-    """Captura en memoria los `AuditLog` que el gateway escribiría."""
+    """Aísla al gateway de la I/O real y captura los `AuditLog` que escribiría.
+
+    Cubre las dos dependencias externas del gateway —Postgres y Redis—, que en los tests
+    unitarios no están: sin esto cada request paga varios segundos en conexiones fallidas.
+    """
     from teleflow.gateway import main
 
     filas: list[Any] = []
     monkeypatch.setattr(main, "get_sessionmaker", lambda: lambda: _SesionFalsa(filas))
+    import redis.asyncio as aioredis
+
+    # `main` hace `import redis.asyncio as aioredis`, así que alcanza con el módulo.
+    monkeypatch.setattr(aioredis, "from_url", lambda *a, **k: _RedisInerte())
     return filas
 
 
