@@ -75,7 +75,7 @@ jobs:
       # Es el componente desde el que se despliega código, así que su camino crítico
       # (aprobar despliega ese borrador, rechazar no despliega) merece cubrirse.
       - name: Set up Node 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: npm
@@ -93,7 +93,7 @@ jobs:
 
       - name: Reporte de UI si algo falla
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-report
           path: review-ui/test-results/
