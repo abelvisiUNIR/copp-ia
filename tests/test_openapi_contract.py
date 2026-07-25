@@ -13,7 +13,7 @@ from fastapi.routing import APIRoute
 
 from teleflow.gateway.main import app
 
-FAMILIAS = {"keys", "flows", "instances", "entities", "composer"}
+FAMILIAS = {"keys", "flows", "instances", "entities", "composer", "audit"}
 
 
 def _operaciones() -> list[tuple[str, str, dict[str, Any]]]:

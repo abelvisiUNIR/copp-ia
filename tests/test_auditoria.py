@@ -175,6 +175,29 @@ def test_las_rutas_publicas_no_se_auditan(client, sink_auditoria):
     assert sink_auditoria == []
 
 
+# ------------------------------------------------- consulta
+
+def test_leer_la_auditoria_exige_su_propio_scope(client, sink_auditoria):
+    """`audit:read` no se hereda de `keys:admin` ni de nada: se otorga."""
+    c = client("keys:admin,flows:deploy,entities:write")
+
+    r = c.get("/audit", headers=H)
+
+    assert r.status_code == 403
+    assert "audit:read" in r.json()["detail"]
+
+
+def test_leer_la_auditoria_queda_auditado(client, sink_auditoria):
+    """La única lectura donde importa quién miró: alguien revisando si sus movimientos
+    quedaron registrados es exactamente lo que este registro tiene que mostrar."""
+    c = client("*")
+
+    c.get("/audit", headers=H)
+
+    assert len(sink_auditoria) == 1
+    assert sink_auditoria[0].scope == auth.AUDIT_READ
+
+
 # ------------------------------------------------- cobertura estructural
 
 def test_todo_scope_esta_clasificado():

@@ -11,6 +11,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime
 from functools import lru_cache
 from typing import Any
 
@@ -140,7 +141,7 @@ async def auditar(request: Request, call_next):  # type: ignore[no-untyped-def]
     # son la señal más barata de una credencial filtrada probando permisos o martillando.
     # En estos casos el scope suele venir vacío, porque el request no llegó a la ruta.
     denegado = response.status_code in (401, 403, 429)
-    if not denegado and scope not in auth.SCOPES_DE_ESCRITURA:
+    if not denegado and scope not in auth.SCOPES_AUDITADOS:
         return response  # lectura exitosa: no se audita (ver el ADR)
 
     await _registrar_auditoria(request, response.status_code, scope)
@@ -293,6 +294,54 @@ async def _proxy(request: Request, base_url: str, path: str) -> Response:
         return _bad_gateway(base_url)
     return Response(content=upstream.content, status_code=upstream.status_code,
                     media_type=upstream.headers.get("content-type", "application/json"))
+
+
+# ------------------------------------------------------------ consulta de auditoría
+
+@app.get("/audit", tags=["audit"], operation_id="listar_auditoria",
+         dependencies=[Depends(auth.require(auth.AUDIT_READ))])
+async def listar_auditoria(
+    actor: str | None = None,
+    scope: str | None = None,
+    subject: str | None = None,
+    desde: datetime | None = None,
+    hasta: datetime | None = None,
+    solo_denegados: bool = False,
+    limit: int = 100,
+) -> Response:
+    """Registro de auditoría, del más reciente al más viejo.
+
+    Sin filtros devuelve las últimas `limit` acciones. `subject` matchea por prefijo, para
+    que `socio` traiga también `socio/12345` (ver cómo se arma el subject en `_subject_de`).
+    """
+    query = select(AuditLog).order_by(AuditLog.occurred_at.desc())
+    if actor:
+        query = query.where(AuditLog.actor_name == actor)
+    if scope:
+        query = query.where(AuditLog.scope == scope)
+    if subject:
+        query = query.where(AuditLog.subject.startswith(subject))
+    if desde is not None:
+        query = query.where(AuditLog.occurred_at >= desde)
+    if hasta is not None:
+        query = query.where(AuditLog.occurred_at <= hasta)
+    if solo_denegados:
+        query = query.where(AuditLog.status_code.in_((401, 403, 429)))
+
+    async with get_sessionmaker()() as session:
+        filas = (await session.execute(query.limit(max(1, min(limit, 1000))))).scalars().all()
+
+    return JSONResponse([{
+        "occurred_at": f.occurred_at.isoformat() if f.occurred_at else None,
+        "actor_name": f.actor_name,
+        "actor_key_id": str(f.actor_key_id) if f.actor_key_id else None,
+        "scope": f.scope,
+        "method": f.method,
+        "path": f.path,
+        "subject": f.subject,
+        "status_code": f.status_code,
+        "details": f.details,
+    } for f in filas])
 
 
 # --------------------------------------------------------- gestión de keys

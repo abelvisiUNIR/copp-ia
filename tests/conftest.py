@@ -41,6 +41,18 @@ class _SesionFalsa:
         """El gateway también consulta `api_keys` acá: sin fila = key no encontrada."""
         return None
 
+    async def execute(self, *args, **kwargs):
+        """Consultas de listado (p.ej. `GET /audit`): sin resultados."""
+        return _ResultadoVacio()
+
+
+class _ResultadoVacio:
+    def scalars(self):
+        return self
+
+    def all(self):
+        return []
+
 
 @pytest.fixture
 def sink_auditoria(monkeypatch):

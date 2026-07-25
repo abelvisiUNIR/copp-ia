@@ -37,6 +37,7 @@ ENTITIES_WRITE = "entities:write"  # crear entidades/relaciones y transicionarla
 COMPOSE_READ = "compose:read"      # ver borradores generados por IA
 COMPOSE_WRITE = "compose:write"    # generar/aprobar borradores
 KEYS_ADMIN = "keys:admin"          # crear/listar credenciales: reparte permisos
+AUDIT_READ = "audit:read"          # leer el registro de auditoría
 
 ALL_SCOPES = frozenset({
     FLOWS_READ, FLOWS_DEPLOY,
@@ -44,6 +45,7 @@ ALL_SCOPES = frozenset({
     ENTITIES_READ, ENTITIES_WRITE,
     COMPOSE_READ, COMPOSE_WRITE,
     KEYS_ADMIN,
+    AUDIT_READ,
 })
 
 WILDCARD = "*"
@@ -155,13 +157,17 @@ SCOPES_DE_ESCRITURA = frozenset({
     ENTITIES_WRITE, COMPOSE_WRITE, KEYS_ADMIN,
 })
 
-#: Scopes de solo lectura: sus acciones exitosas **no** se auditan (sí sus 401/403).
-#: Existe para que la clasificación sea exhaustiva — un test verifica que estos dos conjuntos
-#: cubran `ALL_SCOPES` sin superponerse, así un scope nuevo obliga a decidir si se audita en
-#: vez de quedar sin auditar por omisión.
+#: Scopes de solo lectura. Existe para que la clasificación sea exhaustiva — un test verifica
+#: que estos dos conjuntos cubran `ALL_SCOPES` sin superponerse, así un scope nuevo obliga a
+#: decidir en vez de quedar sin auditar por omisión.
 SCOPES_DE_LECTURA = frozenset({
-    FLOWS_READ, INSTANCES_READ, ENTITIES_READ, COMPOSE_READ,
+    FLOWS_READ, INSTANCES_READ, ENTITIES_READ, COMPOSE_READ, AUDIT_READ,
 })
+
+#: Lo que efectivamente se audita: toda escritura **y la lectura de la auditoría misma**.
+#: `audit:read` es una lectura, pero es la única donde importa quién miró: alguien revisando
+#: si sus movimientos quedaron registrados es exactamente lo que este registro debe mostrar.
+SCOPES_AUDITADOS = SCOPES_DE_ESCRITURA | {AUDIT_READ}
 
 
 def marcar_scope(request: Request, scope: str) -> None:
