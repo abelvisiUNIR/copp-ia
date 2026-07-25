@@ -1,7 +1,7 @@
 ---
 project: copp-ia
 type: concept
-provenance: copp-ia@devyos@072070a
+provenance: copp-ia@devyos@4c7ce34
 created: 2026-07-24
 updated: 2026-07-25
 tags: [concepto, calidad, resiliencia, observabilidad, patron]
@@ -9,10 +9,10 @@ tags: [concepto, calidad, resiliencia, observabilidad, patron]
 
 # Fallas silenciosas — el patrón que más veces apareció en este proyecto
 
-> Provenance: `copp-ia@devyos@072070a`. Sintetizado de cinco work-streams distintos
+> Provenance: `copp-ia@devyos@4c7ce34`. Sintetizado de seis work-streams distintos
 > (`except-swallow-audit`, `limpieza-dx-openapi`, `observabilidad-negocio`,
-> `composer-llm-hardening`, `auditoria-persistida`) que encontraron el mismo problema con
-> caras distintas.
+> `composer-llm-hardening`, `auditoria-persistida`, `registry-cobertura`) que encontraron el
+> mismo problema con caras distintas.
 
 ## Qué es
 Un mecanismo que **parece** estar protegiendo algo y no lo está, y que cuando falla **no
@@ -33,6 +33,7 @@ meses en el repo antes de encontrarse, y ninguno se encontró por un test.
 | 4 | `composer_service/providers.py` | `LLM_PROVIDER=anthropic` = borradores generados por un modelo | Sin credencial, `get_provider` logueaba un `warning` y devolvía el `stub`: `/compose` respondía **201** y el analista recibía un esqueleto con `TODO:` creyendo que lo escribió el modelo. Peor, el log registraba el proveedor *pedido*, así que **la única traza decía lo contrario de lo que pasó**. Un typo en la variable caía al mismo lugar sin ni siquiera el warning | `fa479cb` (`composer-llm-hardening`) |
 | 5 | `composer_service/providers.py` | HTTP 200 = respuesta utilizable | Un rechazo por políticas del modelo llega con **200**, `stop_reason: refusal` y `content: []`; una respuesta cortada por límite de tokens llega con **200** y un `.tflow` a la mitad. La primera reventaba con un `IndexError` reportado como "error del proveedor"; la segunda se guardaba como borrador | `5d89f94` (`composer-llm-hardening`) |
 | 6 | `gateway/main.py` | un middleware que registra al final = registra siempre | El 500 lo arma un middleware de **Starlette** que envuelve a los de la app: una excepción no atrapada salta por encima del middleware propio, `call_next` propaga y el código que sigue nunca corre. Un deploy que crasheaba a mitad de camino no dejaba registro de auditoría — el intento más interesante de todos | `982f12b` (`auditoria-persistida`) |
+| 7 | `registry_service/main.py` | `latest` apunta a la versión mayor | `_semver_key` quitaba los no-dígitos de cada chunk, así que el `1` de `rc1` se sumaba al patch: `1.0.0-rc1` → `(1,0,1)`, **mayor** que `1.0.0`. Registrar un candidato después del estable movía `latest` al candidato y el executor disparaba procesos de negocio con él. El 201 llegaba igual y el pointer apuntaba a algo que existía | `4c7ce34` (`registry-cobertura`) |
 
 ## La forma común
 En los primeros cuatro, el mecanismo de aviso existía y **no cortaba**:
@@ -60,6 +61,11 @@ Dos variantes que conviene tener presentes, porque no se buscan igual:
   del framework envuelve a los de la aplicación, así que "esto corre al final de cada request"
   es falso justo para los requests que fallan. Vale para cualquier middleware que registre,
   mida o limpie algo. La única forma de verlo es **probar el camino de excepción explícito**.
+- **Una función que nunca falla puede estar corrompiendo un orden** (#7). `_semver_key`
+  aceptaba cualquier string y siempre devolvía una tupla: esa tolerancia *era* el bug, porque
+  el `1` de `rc1` terminaba sumado al número de patch. No hay excepción que atrapar ni log que
+  leer — el resultado es simplemente incorrecto. Cuando una función de parseo o normalización
+  no tiene forma de fallar, la pregunta es **qué hace con lo que no entiende**.
 
 Y los primeros tres son peores por *dónde* caen: la DLQ, el contrato de API y el dashboard de backlog
 son justamente las cosas que uno mira para saber si el resto anda bien. Cuando la falla
@@ -75,6 +81,8 @@ publicado sin errores.
   mirando el artefacto, no corriendo la app.
 - **#3** al levantar el stack y abrir Grafana. El JSON era válido, los tests pasaban, la imagen
   se construía sin error.
+- **#7** sondeando `_semver_key` con casos concretos **antes de escribir el primer test**,
+  para saber qué había que fijar. Escribir tests encontró el bug antes que los tests.
 - **#6** sondeando la implementación propia antes de darla por buena: preguntarse "¿qué
   caminos NO estoy registrando?" y medir cada uno. Aparecieron tres huecos que la suite en
   verde no mostraba.
