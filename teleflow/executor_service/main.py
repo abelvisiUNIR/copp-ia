@@ -14,7 +14,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -99,18 +99,28 @@ class ExecuteRequest(BaseModel):
     version: str = "latest"
     payload: dict[str, Any] = Field(default_factory=dict)
     correlation_id: str | None = None
+    # Alternativa al header `Idempotency-Key`, para quien llame al executor directo.
+    idempotency_key: str | None = None
 
 
 @app.post("/execute", status_code=202)
-async def execute(req: ExecuteRequest) -> dict[str, Any]:
+async def execute(
+    req: ExecuteRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    """Dispara un proceso. Con `Idempotency-Key`, reintentar no crea una instancia nueva.
+
+    El header manda sobre el campo del cuerpo: es la convención que los clientes conocen.
+    """
     engine: ExecutionEngine = state["engine"]
     return await engine.trigger(req.flow_name, req.version, req.payload,
-                                req.correlation_id)
+                                req.correlation_id,
+                                idempotency_key or req.idempotency_key)
 
 
 @app.post("/internal/execute", status_code=202, include_in_schema=False)
 async def internal_execute(req: ExecuteRequest) -> dict[str, Any]:
-    return await execute(req)
+    return await execute(req, idempotency_key=None)
 
 
 @app.get("/instances")

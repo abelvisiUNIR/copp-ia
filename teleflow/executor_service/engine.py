@@ -131,7 +131,13 @@ class ExecutionEngine:
     # ------------------------------------------------------------- trigger
 
     async def trigger(self, flow_name: str, version: str, payload: dict[str, Any],
-                      correlation_id: str | None = None) -> dict[str, Any]:
+                      correlation_id: str | None = None,
+                      idempotency_key: str | None = None) -> dict[str, Any]:
+        if idempotency_key:
+            repetido = await self._instancia_de(idempotency_key, flow_name, payload)
+            if repetido is not None:
+                return repetido
+
         resolved = await self._resolve_process(flow_name, version)
         if resolved is None:
             raise DomainError(
@@ -153,21 +159,59 @@ class ExecutionEngine:
                 flow_name=proc.name,
                 flow_version=source_version,
                 correlation_id=correlation_id,
+                idempotency_key=idempotency_key,
                 status="TRIGGERED",
                 trigger_payload=payload,
                 context=context,
             )
             session.add(instance)
-            await session.flush()
+            try:
+                await session.flush()
+            except IntegrityError:
+                # Dos disparos con la misma clave llegaron a la vez: los dos pasaron el
+                # chequeo de arriba y el UNIQUE cortó a este. El que ganó ya creó la
+                # instancia, así que se devuelve esa — que es lo que el cliente pidió.
+                await session.rollback()
+                repetido = await self._instancia_de(idempotency_key, flow_name, payload)
+                if repetido is not None:
+                    return repetido
+                raise
             session.add(InstanceTransition(
                 instance_id=instance.id, from_status="-", to_status="TRIGGERED"))
             instance_id = instance.id
             await session.commit()
 
         log.info("instance_triggered", instance_id=str(instance_id),
-                 flow_name=proc.name, correlation_id=correlation_id)
+                 flow_name=proc.name, correlation_id=correlation_id,
+                 idempotency_key=idempotency_key)
         self._spawn(self._drive(instance_id))
         return {"instance_id": str(instance_id), "status": "TRIGGERED"}
+
+    async def _instancia_de(self, idempotency_key: str | None, flow_name: str,
+                            payload: dict[str, Any]) -> dict[str, Any] | None:
+        """La instancia que ya creó esta clave, si existe. `None` = es la primera vez.
+
+        Si la clave existe pero el pedido es otro, levanta 409 en vez de devolver la vieja:
+        el cliente pidió A y recibiría el resultado de B creyendo que A se disparó — un
+        proceso de negocio que nunca ocurrió y que nadie sabría que falta.
+        """
+        if not idempotency_key:
+            return None
+        async with self._sessionmaker() as session:
+            fila = await session.scalar(
+                select(ProcessInstance).where(
+                    ProcessInstance.idempotency_key == idempotency_key)
+            )
+        if fila is None:
+            return None
+        if fila.flow_name != flow_name or fila.trigger_payload != payload:
+            raise DomainError(
+                f"la Idempotency-Key '{idempotency_key}' ya se usó para otro pedido "
+                f"(instancia {fila.id}, flow '{fila.flow_name}')", 409)
+        log.info("instance_idempotent_replay", instance_id=str(fila.id),
+                 flow_name=flow_name, idempotency_key=idempotency_key)
+        return {"instance_id": str(fila.id), "status": fila.status,
+                "idempotent_replay": True}
 
     async def _resolve_process(
         self, flow_name: str, version: str

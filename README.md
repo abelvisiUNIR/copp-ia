@@ -86,6 +86,20 @@ tflow status <instance_id>     # → COMPLETED
 
 El executor puede reiniciarse sin perder instancias dormidas: el estado vive en Postgres y la reactivación llega por Redis pub/sub (ADR-002).
 
+### Disparos idempotentes
+
+Un reintento por timeout —el más común— crearía un segundo expediente: dos notificaciones al ciudadano, dos llamadas a la integración. Para evitarlo, mandá una `Idempotency-Key`:
+
+```bash
+curl -X POST "$API/execute" -H "X-TeleFlow-API-Key: $KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"flow_name":"venta_internet_hogar","payload":{"cliente_id":"c-1"}}'
+```
+
+La primera llamada crea la instancia; las repeticiones devuelven **la misma**, con `idempotent_replay: true`. La clave **no expira**: vive con la instancia, así que un reintento tardío sigue protegido.
+
+**Es opcional**: sin clave, cada llamada dispara (el comportamiento de siempre). Y **la misma clave con otro pedido da 409**, en vez de devolver la instancia vieja — recibir el resultado de otra operación creyendo que la propia se ejecutó es peor que un error visible.
+
 ### Capa IA (compose → review → deploy)
 
 ```bash

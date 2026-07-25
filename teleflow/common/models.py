@@ -58,6 +58,13 @@ class ProcessInstance(Base):
     flow_name: Mapped[str] = mapped_column(String(200), index=True)
     flow_version: Mapped[str] = mapped_column(String(50))
     correlation_id: Mapped[str | None] = mapped_column(String(200), index=True, nullable=True)
+    # Dedup de disparos: una clave = una instancia, para siempre. **Único**, a diferencia de
+    # `correlation_id`, que es un id de traza y puede repetirse legítimamente entre varios
+    # procesos de la misma transacción. En Postgres los NULL no colisionan, así que las
+    # instancias sin clave —la mayoría— no se estorban.
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(200), unique=True, nullable=True
+    )
     status: Mapped[str] = mapped_column(String(30), index=True, default="TRIGGERED")
     trigger_payload: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
     context: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
