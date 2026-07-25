@@ -126,6 +126,12 @@ Combinado y en este orden de madurez:
 `A (transversal)` → **`B` (CI primero)** → `C` (calidad) → `D` (mejoras selectivas) → `E` (producción).
 **Regla:** no pasar a Producción (E) sin C + D estables. D siempre después de tener CI (B).
 
+## Backlog transversal
+Los huecos que no caen limpio en una fase (auditoría persistida, `registry-service` sin tests,
+rate limit por proceso, `/execute` sin idempotencia, `review-ui` sin red de seguridad,
+backup/restore) están en [[backlog-hardening]], con evidencia y prioridad. Esa página se
+mantiene aparte para no distorsionar la estructura de fases del arquitecto.
+
 ## Cómo lo trackeamos
 - Cada Fase = uno o más **work-streams**, cada uno con su rama.
 - ADRs para decisiones de mejora (Fase D) en `Knowledge/decisions/`.
