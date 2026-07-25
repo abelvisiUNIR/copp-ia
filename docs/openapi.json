@@ -514,6 +514,7 @@
           "instances"
         ],
         "summary": "Execute",
+        "description": "Dispara un proceso. Con `Idempotency-Key`, reintentar no crea una instancia nueva.\n\nEl header se propaga explícitamente: el proxy no copia los del cliente, así que sin esta\nlínea la clave se perdería en el camino y quien la mandó creería estar protegido.",
         "operationId": "ejecutar_flow",
         "responses": {
           "200": {

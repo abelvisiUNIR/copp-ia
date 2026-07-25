@@ -279,16 +279,22 @@ async def _post_upstream(base_url: str, path: str,
         raise UpstreamDown(base_url, exc) from exc
 
 
-async def _proxy(request: Request, base_url: str, path: str) -> Response:
+async def _proxy(request: Request, base_url: str, path: str,
+                 extra_headers: dict[str, str] | None = None) -> Response:
+    """Reenvía al servicio interno. Los headers se arman **desde cero**, no se copian los del
+    cliente: así nada del exterior se cuela hacia adentro. Una ruta que necesita propagar un
+    header concreto lo pasa por `extra_headers`, explícito y a la vista."""
     assert client is not None
     body = await request.body()
+    headers = {"Content-Type": "application/json"} if body else {}
+    headers.update(extra_headers or {})
     try:
         upstream = await client.request(
             request.method,
             f"{base_url}{path}",
             content=body if body else None,
             params=dict(request.query_params),
-            headers={"Content-Type": "application/json"} if body else {},
+            headers=headers,
         )
     except httpx.RequestError:  # conexión rechazada, timeout, DNS
         return _bad_gateway(base_url)
@@ -548,7 +554,14 @@ async def flow_version(request: Request, name: str, version: str) -> Response:
 @app.post("/execute", tags=["instances"], operation_id="ejecutar_flow",
           dependencies=[Depends(auth.require(auth.INSTANCES_TRIGGER))])
 async def execute(request: Request) -> Response:
-    return await _proxy(request, get_settings().executor_url, "/execute")
+    """Dispara un proceso. Con `Idempotency-Key`, reintentar no crea una instancia nueva.
+
+    El header se propaga explícitamente: el proxy no copia los del cliente, así que sin esta
+    línea la clave se perdería en el camino y quien la mandó creería estar protegido.
+    """
+    clave = request.headers.get("Idempotency-Key")
+    return await _proxy(request, get_settings().executor_url, "/execute",
+                        extra_headers={"Idempotency-Key": clave} if clave else None)
 
 
 @app.get("/instances", tags=["instances"], operation_id="listar_instancias",
