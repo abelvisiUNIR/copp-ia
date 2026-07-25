@@ -23,3 +23,7 @@ wiki/Untitled.base
 # Al repo compartido solo va wiki/Knowledge/ (ADRs, roadmap, guías).
 wiki/Journal/
 wiki/templates/
+
+# Respaldos locales de la base (ver scripts/backup.sh)
+backups/
+*.dump

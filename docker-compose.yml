@@ -50,11 +50,20 @@ services:
 
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
+    # RabbitMQ guarda los datos en `mnesia/rabbit@$HOSTNAME`, y sin esto el hostname es el ID
+    # del contenedor: al recrearlo cambia el nombre del nodo y el directorio anterior queda
+    # huérfano dentro del volumen. El volumen **solo** no alcanza — verificado.
+    hostname: rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: teleflow
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-teleflow}
     ports:
       - "15672:15672"
+    volumes:
+      # Sin esto, /var/lib/rabbitmq vive en la capa escribible del contenedor: las colas y la
+      # DLQ sobreviven a un `restart` pero **no** a recrear el contenedor (`up --build`). La
+      # app declara todo durable y persistente; el volumen es lo que lo hace cierto.
+      - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
@@ -164,3 +173,4 @@ services:
 volumes:
   pgdata:
   grafana-data:
+  rabbitmq-data:
