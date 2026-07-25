@@ -11,6 +11,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime
 from functools import lru_cache
 from typing import Any
 
@@ -22,10 +23,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from prometheus_client import Counter
+
 from teleflow.common.config import Settings, get_settings
-from teleflow.common.db import get_sessionmaker, init_db
+from teleflow.common.db import db_ping, get_sessionmaker, init_db
 from teleflow.common.logging import setup_logging
-from teleflow.common.models import ApiKey
+from teleflow.common.models import ApiKey, AuditLog
 from teleflow.common.observability import setup_observability
 from teleflow.gateway import auth
 
@@ -51,7 +54,9 @@ api_key_scheme = APIKeyHeader(name="X-TeleFlow-API-Key", auto_error=False)
 
 app = FastAPI(title="TeleFlow API Gateway", version="1.0.0", lifespan=lifespan,
               dependencies=[Depends(api_key_scheme)])
-setup_observability(app, "api-gateway")
+# El gateway no tenía readiness real: sin Postgres no puede resolver ninguna key de la tabla
+# `api_keys` **ni** escribir auditoría, así que declararse listo sería mentir.
+setup_observability(app, "api-gateway", ready_check=db_ping)
 
 
 # ------------------------------------------------------------ rate limiting
@@ -96,6 +101,91 @@ async def auth_and_rate_limit(request: Request, call_next):  # type: ignore[no-u
 
     request.state.identidad = identidad
     return await call_next(request)
+
+
+# ------------------------------------------------------------------ auditoría
+
+AUDIT_WRITE_FAILURES = Counter(
+    "teleflow_audit_write_failures_total",
+    "Registros de auditoría que no se pudieron escribir",
+)
+
+
+@app.middleware("http")
+async def auditar(request: Request, call_next):  # type: ignore[no-untyped-def]
+    """Registra la acción **después** de conocer su resultado.
+
+    Se declara después de `auth_and_rate_limit` para quedar por fuera de él: así ve también
+    los 401, que ese middleware corta antes de llegar a ninguna ruta.
+
+    Qué se registra lo decide el scope que la ruta exigió (`auth.marcar_scope`), no una lista
+    de rutas: una ruta nueva con scope de escritura queda auditada sin que su autor haga nada.
+    """
+    publico = request.url.path in PUBLIC_PATHS or request.method == "OPTIONS"
+
+    try:
+        response = await call_next(request)
+    except Exception:
+        # Una ruta que revienta es el intento **más** interesante de registrar: sin esto, un
+        # deploy que crashea a mitad de camino no dejaba rastro (el 500 lo arma un middleware
+        # de Starlette que está por fuera de este, así que `call_next` propaga la excepción).
+        if not publico:
+            await _registrar_auditoria(request, 500, auth.scope_exigido(request))
+        raise
+
+    if publico:
+        return response
+
+    scope = auth.scope_exigido(request)
+    # 401/403/429 = "no te dejé". Se registran siempre, aunque la acción fuera de lectura:
+    # son la señal más barata de una credencial filtrada probando permisos o martillando.
+    # En estos casos el scope suele venir vacío, porque el request no llegó a la ruta.
+    denegado = response.status_code in (401, 403, 429)
+    if not denegado and scope not in auth.SCOPES_AUDITADOS:
+        return response  # lectura exitosa: no se audita (ver el ADR)
+
+    await _registrar_auditoria(request, response.status_code, scope)
+    return response
+
+
+def _subject_de(path: str) -> str | None:
+    """Identificador del recurso: todo lo que sigue a la colección.
+
+    `/flows/alta_socio` → `alta_socio`; `/entities/socio/12345` → `socio/12345`.
+
+    Se queda con **todos** los segmentos, no solo el primero: en las rutas anidadas el
+    primero es el *tipo* y el segundo el registro, y una auditoría que dijera "alguien
+    modificó un socio" sin decir cuál no sirve para lo que existe.
+
+    Genérico a propósito: derivarlo de una tabla de rutas sería otra lista que mantener.
+    """
+    partes = [p for p in path.split("/") if p]
+    return "/".join(partes[1:])[:200] if len(partes) > 1 else None
+
+
+async def _registrar_auditoria(request: Request, status_code: int, scope: str) -> None:
+    identidad: auth.Identidad | None = getattr(request.state, "identidad", None)
+    try:
+        async with get_sessionmaker()() as session:
+            session.add(AuditLog(
+                actor_name=identidad.name if identidad is not None else "key inválida",
+                actor_key_id=identidad.key_id if identidad is not None else None,
+                scope=scope,
+                method=request.method,
+                path=str(request.url.path)[:500],
+                subject=_subject_de(request.url.path),
+                status_code=status_code,
+                details=auth.detalles_de(request),
+            ))
+            await session.commit()
+    except Exception as exc:
+        # `except Exception` deliberado y **no silencioso**: la acción ya ocurrió y no se puede
+        # deshacer, así que romper la respuesta no arregla nada. Pero quedarse sin auditoría
+        # tiene que ser visible — de ahí el contador (alertable) y el log de error. Ver el
+        # límite consciente en el ADR: esto es best-effort en el margen.
+        AUDIT_WRITE_FAILURES.inc()
+        log.error("audit_write_failed", error=str(exc), method=request.method,
+                  path=request.url.path, status_code=status_code, scope=scope)
 
 
 # ------------------------------------------------------ resolución de la key
@@ -204,6 +294,54 @@ async def _proxy(request: Request, base_url: str, path: str) -> Response:
         return _bad_gateway(base_url)
     return Response(content=upstream.content, status_code=upstream.status_code,
                     media_type=upstream.headers.get("content-type", "application/json"))
+
+
+# ------------------------------------------------------------ consulta de auditoría
+
+@app.get("/audit", tags=["audit"], operation_id="listar_auditoria",
+         dependencies=[Depends(auth.require(auth.AUDIT_READ))])
+async def listar_auditoria(
+    actor: str | None = None,
+    scope: str | None = None,
+    subject: str | None = None,
+    desde: datetime | None = None,
+    hasta: datetime | None = None,
+    solo_denegados: bool = False,
+    limit: int = 100,
+) -> Response:
+    """Registro de auditoría, del más reciente al más viejo.
+
+    Sin filtros devuelve las últimas `limit` acciones. `subject` matchea por prefijo, para
+    que `socio` traiga también `socio/12345` (ver cómo se arma el subject en `_subject_de`).
+    """
+    query = select(AuditLog).order_by(AuditLog.occurred_at.desc())
+    if actor:
+        query = query.where(AuditLog.actor_name == actor)
+    if scope:
+        query = query.where(AuditLog.scope == scope)
+    if subject:
+        query = query.where(AuditLog.subject.startswith(subject))
+    if desde is not None:
+        query = query.where(AuditLog.occurred_at >= desde)
+    if hasta is not None:
+        query = query.where(AuditLog.occurred_at <= hasta)
+    if solo_denegados:
+        query = query.where(AuditLog.status_code.in_((401, 403, 429)))
+
+    async with get_sessionmaker()() as session:
+        filas = (await session.execute(query.limit(max(1, min(limit, 1000))))).scalars().all()
+
+    return JSONResponse([{
+        "occurred_at": f.occurred_at.isoformat() if f.occurred_at else None,
+        "actor_name": f.actor_name,
+        "actor_key_id": str(f.actor_key_id) if f.actor_key_id else None,
+        "scope": f.scope,
+        "method": f.method,
+        "path": f.path,
+        "subject": f.subject,
+        "status_code": f.status_code,
+        "details": f.details,
+    } for f in filas])
 
 
 # --------------------------------------------------------- gestión de keys
@@ -327,9 +465,13 @@ class DeployRequest(BaseModel):
 
 @app.post("/flows/{name}", tags=["flows"], operation_id="desplegar_flow",
           dependencies=[Depends(auth.require(auth.FLOWS_DEPLOY))])
-async def deploy_flow(name: str, req: DeployRequest) -> Response:
+async def deploy_flow(name: str, req: DeployRequest, request: Request) -> Response:
     """Valida en parser-service y persiste en registry-service."""
     settings = get_settings()
+    # Enriquecimiento para la auditoría: la versión y el checksum permiten responder "¿esta
+    # versión es la que se publicó?" sin guardar el código. El checksum se agrega abajo,
+    # cuando el parser lo devuelve.
+    auth.detallar(request, version=req.version)
     try:
         parse_response = await _post_upstream(
             settings.parser_url, "/parse", {"source": req.source, "name": name})
@@ -341,6 +483,7 @@ async def deploy_flow(name: str, req: DeployRequest) -> Response:
                         status_code=parse_response.status_code,
                         media_type="application/json")
     parsed = parse_response.json()
+    auth.detallar(request, checksum=parsed.get("checksum"))
     if not parsed["valid"]:
         return JSONResponse(status_code=422, content={
             "detail": "El flow no pasó la validación",

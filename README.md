@@ -131,7 +131,7 @@ mypy .          # todo el repo, igual que CI
 
 Convenciones: tipado estricto, Pydantic v2 en la API, dataclasses en el AST, structlog con `instance_id`/`flow_name`/`step_name`, pytest-asyncio, Alembic.
 
-`mypy .` cubre el repo entero (58 archivos) y es exactamente lo que corre CI. A los tests **no** se les exigen anotaciones de firma (`[tool.mypy.overrides]` en `pyproject.toml`): lo que se busca ahí es que un cambio de firma en `teleflow/` rompa el type check de sus tests, no anotar 350 funciones de test.
+`mypy .` cubre el repo entero (64 archivos) y es exactamente lo que corre CI. A los tests **no** se les exigen anotaciones de firma (`[tool.mypy.overrides]` en `pyproject.toml`): lo que se busca ahí es que un cambio de firma en `teleflow/` rompa el type check de sus tests, no anotar 350 funciones de test.
 
 Los tests e2e (`tests/e2e/`) requieren el stack levantado; si el gateway no responde **se saltan**, así `pytest` sigue verde sin Docker.
 
@@ -143,6 +143,23 @@ tflow openapi --output otro/lado.json
 ```
 
 Sale del código (importa la app), así que **no hace falta el stack levantado**. Cada ruta declara `operation_id` y `tags` explícitos, para que un cliente generado tenga nombres estables: si se renombra la función Python, el método del cliente no cambia.
+
+### Auditoría
+
+Toda acción de **escritura** y **todo intento denegado** (401/403/429, incluso de lectura) queda registrado en la tabla `audit_log`: quién, qué, sobre qué, cuándo y con qué resultado. Las lecturas exitosas no se registran, salvo la lectura de la auditoría misma.
+
+```bash
+curl "$API/audit?limit=50"                    -H "X-TeleFlow-API-Key: $KEY"
+curl "$API/audit?scope=flows:deploy"          -H "X-TeleFlow-API-Key: $KEY"
+curl "$API/audit?solo_denegados=true"         -H "X-TeleFlow-API-Key: $KEY"
+curl "$API/audit?subject=socio&desde=2026-07-01" -H "X-TeleFlow-API-Key: $KEY"
+```
+
+Requiere el scope `audit:read`, que se otorga explícitamente: no lo hereda `keys:admin` ni ningún otro.
+
+**No se guarda el cuerpo de los requests** — por ahí pasan datos personales, y esta es la tabla que más tiempo se conserva. De un deploy se guardan la versión y el **checksum** del source, que responden "¿esta versión es la que se publicó?" sin almacenar el código.
+
+**La tabla no se purga sola.** La retención es política de cada organismo: un despliegue con mucho tráfico de escritura va a querer una política de archivado. Borrar auditoría por un default del producto sería peor que la tabla creciendo.
 
 ## Observabilidad
 
