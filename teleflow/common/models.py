@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Text,
     UniqueConstraint,
     Uuid,
@@ -216,3 +217,41 @@ class ApiKey(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class AuditLog(Base):
+    """Quién hizo qué, cuándo y con qué resultado. Append-only.
+
+    Registra las acciones de **escritura** y **todo intento denegado** (401/403), incluso de
+    lectura: un intento fallido de desplegar es lo que una auditoría tiene que mostrar. Las
+    lecturas que salen bien no se registran (ver el ADR de auditoría persistida).
+
+    **No guarda el cuerpo del request.** Por ahí pasan datos personales, y esta es la tabla
+    que más tiempo se conserva y más gente puede leer. Para el deploy —donde el cuerpo
+    importa— se guarda el checksum en `details`.
+
+    Nunca se actualiza ni se borra desde la API. La retención es política del organismo.
+    """
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    # Identidad de la key. `actor_name` se conserva aunque la key se revoque después: la fila
+    # de `api_keys` no se borra justamente para que esto siga significando algo.
+    actor_name: Mapped[str] = mapped_column(String(200), index=True)
+    # None = key de bootstrap (env), que no está en la tabla `api_keys`.
+    actor_key_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
+    # Scope exigido por la ruta = qué clase de acción se intentó. Vacío en un 401, donde el
+    # request nunca llegó a la ruta.
+    scope: Mapped[str] = mapped_column(String(50), default="", index=True)
+    method: Mapped[str] = mapped_column(String(10))
+    path: Mapped[str] = mapped_column(String(500))
+    # Identificador del recurso tocado (nombre del flow, instance_id, entidad).
+    subject: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    status_code: Mapped[int] = mapped_column(Integer)
+    # Enriquecimiento opcional de la ruta (p.ej. el checksum del source en un deploy). Que
+    # falte no invalida el registro: es detalle, no la traza.
+    details: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)

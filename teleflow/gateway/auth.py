@@ -116,6 +116,9 @@ def scopes_de(request: Request) -> frozenset[str]:
 def require(scope: str) -> Callable[[Request], None]:
     """Dependencia FastAPI: 403 si la key no tiene el scope."""
     def _check(request: Request) -> None:
+        # Se anota **antes** de chequear: un 403 tiene que registrar qué se intentó hacer,
+        # que es la señal más barata de una credencial filtrada probando permisos.
+        marcar_scope(request, scope)
         if scope not in scopes_de(request):
             raise HTTPException(
                 status_code=403,
@@ -130,9 +133,57 @@ def require_por_metodo(por_metodo: dict[str, str]) -> Callable[[Request], None]:
         scope = por_metodo.get(request.method)
         if scope is None:
             raise HTTPException(status_code=405, detail="método no permitido")
+        marcar_scope(request, scope)
         if scope not in scopes_de(request):
             raise HTTPException(
                 status_code=403,
                 detail=f"la API key no tiene el scope '{scope}'",
             )
     return _check
+
+
+# --- auditoría ----------------------------------------------------------------
+# El scope exigido por la ruta **es** la taxonomía de acciones: no hay una segunda lista que
+# mantener. Se anota acá, en un solo lugar, y el middleware de auditoría lo lee después de la
+# respuesta. Consecuencia buscada: una ruta nueva con scope de escritura queda auditada sin
+# que su autor haga nada. Una lista ruta-por-ruta sería algo que alguien olvida actualizar, y
+# el olvido no haría ruido.
+
+#: Scopes cuyas acciones **modifican** algo y por lo tanto se auditan siempre.
+SCOPES_DE_ESCRITURA = frozenset({
+    FLOWS_DEPLOY, INSTANCES_TRIGGER, INSTANCES_SIGNAL, INSTANCES_RETRY,
+    ENTITIES_WRITE, COMPOSE_WRITE, KEYS_ADMIN,
+})
+
+#: Scopes de solo lectura: sus acciones exitosas **no** se auditan (sí sus 401/403).
+#: Existe para que la clasificación sea exhaustiva — un test verifica que estos dos conjuntos
+#: cubran `ALL_SCOPES` sin superponerse, así un scope nuevo obliga a decidir si se audita en
+#: vez de quedar sin auditar por omisión.
+SCOPES_DE_LECTURA = frozenset({
+    FLOWS_READ, INSTANCES_READ, ENTITIES_READ, COMPOSE_READ,
+})
+
+
+def marcar_scope(request: Request, scope: str) -> None:
+    """Deja constancia de qué scope exigió esta ruta, para el registro de auditoría."""
+    request.state.audit_scope = scope
+
+
+def scope_exigido(request: Request) -> str:
+    """Scope que la ruta exigió. Vacío si el request nunca llegó a una ruta (401)."""
+    valor = getattr(request.state, "audit_scope", "")
+    return valor if isinstance(valor, str) else ""
+
+
+def detallar(request: Request, **datos: object) -> None:
+    """Enriquecimiento opcional desde una ruta (p.ej. el checksum de un deploy).
+
+    Que falte no invalida el registro: es detalle, no la traza.
+    """
+    actuales = getattr(request.state, "audit_details", None) or {}
+    request.state.audit_details = {**actuales, **datos}
+
+
+def detalles_de(request: Request) -> dict[str, object] | None:
+    valor = getattr(request.state, "audit_details", None)
+    return valor if isinstance(valor, dict) else None
