@@ -132,8 +132,12 @@ ruido: sería una falla silenciosa en la capa de garantías, que es el peor luga
   auditoría es un permiso que se otorga, no que se hereda.
 - **`/ready` del gateway ahora depende de Postgres.** Es un cambio de comportamiento: antes
   respondía "listo" siempre, incluso con la base caída (cuando no podía resolver ninguna key
-  de `api_keys`). Un orquestador que dependa de `/ready` va a sacar de rotación un gateway sin
-  base, que es lo correcto pero es nuevo.
+  de `api_keys`). **El orquestador concreto es el Helm chart**, que usa `/ready` como
+  `readinessProbe` de todos los servicios (`helm/teleflow/templates/deployments.yaml:38-41`):
+  en k8s, con Postgres caído los pods del gateway salen de rotación y el Service se queda sin
+  endpoints, o sea que la API pasa de devolver 401 a no responder. Es la semántica correcta
+  —sin base el gateway solo puede atender la key de bootstrap— pero conviene saberlo antes de
+  la Fase E, que es cuando el chart se prueba de verdad (`roadmap.md:110`).
 - **El middleware toca todos los requests.** Es un `INSERT` por acción de escritura; las
   lecturas exitosas no escriben nada, que es la mayoría del tráfico.
 
