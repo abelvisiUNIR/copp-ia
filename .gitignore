@@ -10,6 +10,9 @@ dist/
 build/
 node_modules/
 review-ui/dist/
+# Salidas de los tests de UI (Playwright)
+review-ui/test-results/
+review-ui/playwright-report/
 .DS_Store
 
 # Estado local de Obsidian (UI/workspace) — no se versiona
