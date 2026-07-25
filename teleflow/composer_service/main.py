@@ -10,6 +10,7 @@ Flujo PR-style:
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -23,14 +24,25 @@ from teleflow.common.db import db_ping, dispose_db, get_session, init_db
 from teleflow.common.logging import setup_logging
 from teleflow.common.models import FlowDraft
 from teleflow.common.observability import setup_observability
-from teleflow.composer_service.providers import get_provider
+from teleflow.composer_service.providers import (
+    LLMConfigurationError,
+    LLMRequestRejected,
+    LLMTransientError,
+    get_provider,
+)
 
 log = setup_logging("composer-service")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    init_db(get_settings())
+    settings = get_settings()
+    # Se construye acá a propósito: si `LLM_PROVIDER` no se puede satisfacer, el servicio no
+    # arranca. Descubrirlo por request significa descubrirlo cuando alguien ya escribió el
+    # pedido, y antes significaba no descubrirlo nunca (caía al stub en silencio).
+    provider = get_provider(settings)
+    log.info("llm_provider_ready", provider=provider.name)
+    init_db(settings)
     yield
     await dispose_db()
 
@@ -54,11 +66,21 @@ async def compose(req: ComposeRequest,
     if req.base_source:
         prompt += ("\n\nVersión actual del flow (modificala según el pedido):\n"
                    + req.base_source)
+    # Tres finales distintos, tres códigos distintos: antes todo era 502, así que un prompt
+    # rechazado y un proveedor caído se veían igual desde el cliente.
     try:
         source = await provider.generate(prompt)
-    except Exception as exc:
-        log.error("llm_generation_failed", error=str(exc))
-        raise HTTPException(status_code=502, detail=f"Error del proveedor LLM: {exc}")
+    except LLMRequestRejected as exc:
+        log.warning("llm_request_rejected", provider=provider.name, error=str(exc))
+        raise HTTPException(status_code=422, detail=f"El proveedor rechazó el pedido: {exc}")
+    except LLMConfigurationError as exc:
+        # Nuestra instalación está mal (credencial, modelo, max_tokens): no es culpa de quien
+        # pidió el borrador, y reintentar no lo arregla.
+        log.error("llm_misconfigured", provider=provider.name, error=str(exc))
+        raise HTTPException(status_code=500, detail=f"Composer mal configurado: {exc}")
+    except LLMTransientError as exc:
+        log.error("llm_unavailable", provider=provider.name, error=str(exc))
+        raise HTTPException(status_code=502, detail=f"Proveedor LLM no disponible: {exc}")
 
     # limpiar fences de markdown si el modelo los agregó
     source = source.strip()
@@ -66,13 +88,51 @@ async def compose(req: ComposeRequest,
         lines = source.splitlines()
         source = "\n".join(l for l in lines if not l.strip().startswith("```"))
 
+    # Se valida antes de guardar, pero **no** condiciona el guardado: un borrador que no
+    # compila suele estar a dos líneas de hacerlo, y la generación ya se pagó. Lo que no
+    # puede pasar es que llegue a un revisor humano sin que nadie sepa que no compila —
+    # antes eso se descubría recién en el deploy, después de la revisión.
+    validation = await _validate_source(source, req.name)
+
     draft = FlowDraft(name=req.name, description=req.description,
-                      source=source, base_source=req.base_source)
+                      source=source, base_source=req.base_source,
+                      provider=provider.name, validation=validation)
     session.add(draft)
     await session.commit()
+    # `provider.name` (lo que corrió), no `settings.llm_provider` (lo que se pidió).
     log.info("draft_created", flow_name=req.name, draft_id=str(draft.id),
-             provider=settings.llm_provider)
+             provider=provider.name, parses=validation["parses"])
     return _draft_out(draft)
+
+
+async def _validate_source(source: str, name: str) -> dict[str, Any]:
+    """Pasa el borrador por el `parser-service`. Nunca levanta por culpa del parser.
+
+    `parses: None` significa **no se pudo verificar**, y es un estado distinto de "compila".
+    Si el parser está caído, la generación no se bloquea, pero la degradación queda escrita
+    en el borrador: dar por bueno lo que no se verificó sería el mismo problema que este
+    cambio arregla, un nivel más abajo.
+    """
+    checked_at = datetime.now(timezone.utc).isoformat()
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{get_settings().parser_url}/parse",
+                json={"source": source, "name": name},
+            )
+        response.raise_for_status()
+        data = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        # Solo transporte y respuesta ilegible: un bug nuestro no puede disfrazarse de
+        # "parser caído", así que cualquier otra excepción sigue de largo.
+        log.error("draft_validation_unavailable", flow_name=name, error=str(exc))
+        return {"parses": None, "issues": [], "error": str(exc), "checked_at": checked_at}
+
+    return {
+        "parses": bool(data.get("valid")),
+        "issues": data.get("issues", []),
+        "checked_at": checked_at,
+    }
 
 
 @app.get("/drafts")
@@ -165,6 +225,10 @@ def _draft_out(draft: FlowDraft, include_source: bool = True) -> dict[str, Any]:
         "status": draft.status,
         "comments": draft.comments,
         "created_at": draft.created_at.isoformat() if draft.created_at else None,
+        # Van también en el listado (`include_source=False`): son justamente lo que decide
+        # si vale la pena abrir un borrador.
+        "provider": draft.provider,
+        "validation": draft.validation,
     }
     if include_source:
         out["source"] = draft.source

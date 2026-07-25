@@ -19,7 +19,7 @@ H = {"X-TeleFlow-API-Key": KEY}
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, sink_auditoria):
     """TestClient con los scopes de la key global configurables por test.
 
     Se entra al context manager para que corra el `lifespan` (crea el cliente httpx que usa

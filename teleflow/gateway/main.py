@@ -11,6 +11,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime
 from functools import lru_cache
 from typing import Any
 
@@ -22,10 +23,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from prometheus_client import Counter
+
 from teleflow.common.config import Settings, get_settings
-from teleflow.common.db import get_sessionmaker, init_db
+from teleflow.common.db import db_ping, get_sessionmaker, init_db
 from teleflow.common.logging import setup_logging
-from teleflow.common.models import ApiKey
+from teleflow.common.models import ApiKey, AuditLog
 from teleflow.common.observability import setup_observability
 from teleflow.gateway import auth
 
@@ -51,7 +54,9 @@ api_key_scheme = APIKeyHeader(name="X-TeleFlow-API-Key", auto_error=False)
 
 app = FastAPI(title="TeleFlow API Gateway", version="1.0.0", lifespan=lifespan,
               dependencies=[Depends(api_key_scheme)])
-setup_observability(app, "api-gateway")
+# El gateway no tenía readiness real: sin Postgres no puede resolver ninguna key de la tabla
+# `api_keys` **ni** escribir auditoría, así que declararse listo sería mentir.
+setup_observability(app, "api-gateway", ready_check=db_ping)
 
 
 # ------------------------------------------------------------ rate limiting
@@ -96,6 +101,91 @@ async def auth_and_rate_limit(request: Request, call_next):  # type: ignore[no-u
 
     request.state.identidad = identidad
     return await call_next(request)
+
+
+# ------------------------------------------------------------------ auditoría
+
+AUDIT_WRITE_FAILURES = Counter(
+    "teleflow_audit_write_failures_total",
+    "Registros de auditoría que no se pudieron escribir",
+)
+
+
+@app.middleware("http")
+async def auditar(request: Request, call_next):  # type: ignore[no-untyped-def]
+    """Registra la acción **después** de conocer su resultado.
+
+    Se declara después de `auth_and_rate_limit` para quedar por fuera de él: así ve también
+    los 401, que ese middleware corta antes de llegar a ninguna ruta.
+
+    Qué se registra lo decide el scope que la ruta exigió (`auth.marcar_scope`), no una lista
+    de rutas: una ruta nueva con scope de escritura queda auditada sin que su autor haga nada.
+    """
+    publico = request.url.path in PUBLIC_PATHS or request.method == "OPTIONS"
+
+    try:
+        response = await call_next(request)
+    except Exception:
+        # Una ruta que revienta es el intento **más** interesante de registrar: sin esto, un
+        # deploy que crashea a mitad de camino no dejaba rastro (el 500 lo arma un middleware
+        # de Starlette que está por fuera de este, así que `call_next` propaga la excepción).
+        if not publico:
+            await _registrar_auditoria(request, 500, auth.scope_exigido(request))
+        raise
+
+    if publico:
+        return response
+
+    scope = auth.scope_exigido(request)
+    # 401/403/429 = "no te dejé". Se registran siempre, aunque la acción fuera de lectura:
+    # son la señal más barata de una credencial filtrada probando permisos o martillando.
+    # En estos casos el scope suele venir vacío, porque el request no llegó a la ruta.
+    denegado = response.status_code in (401, 403, 429)
+    if not denegado and scope not in auth.SCOPES_AUDITADOS:
+        return response  # lectura exitosa: no se audita (ver el ADR)
+
+    await _registrar_auditoria(request, response.status_code, scope)
+    return response
+
+
+def _subject_de(path: str) -> str | None:
+    """Identificador del recurso: todo lo que sigue a la colección.
+
+    `/flows/alta_socio` → `alta_socio`; `/entities/socio/12345` → `socio/12345`.
+
+    Se queda con **todos** los segmentos, no solo el primero: en las rutas anidadas el
+    primero es el *tipo* y el segundo el registro, y una auditoría que dijera "alguien
+    modificó un socio" sin decir cuál no sirve para lo que existe.
+
+    Genérico a propósito: derivarlo de una tabla de rutas sería otra lista que mantener.
+    """
+    partes = [p for p in path.split("/") if p]
+    return "/".join(partes[1:])[:200] if len(partes) > 1 else None
+
+
+async def _registrar_auditoria(request: Request, status_code: int, scope: str) -> None:
+    identidad: auth.Identidad | None = getattr(request.state, "identidad", None)
+    try:
+        async with get_sessionmaker()() as session:
+            session.add(AuditLog(
+                actor_name=identidad.name if identidad is not None else "key inválida",
+                actor_key_id=identidad.key_id if identidad is not None else None,
+                scope=scope,
+                method=request.method,
+                path=str(request.url.path)[:500],
+                subject=_subject_de(request.url.path),
+                status_code=status_code,
+                details=auth.detalles_de(request),
+            ))
+            await session.commit()
+    except Exception as exc:
+        # `except Exception` deliberado y **no silencioso**: la acción ya ocurrió y no se puede
+        # deshacer, así que romper la respuesta no arregla nada. Pero quedarse sin auditoría
+        # tiene que ser visible — de ahí el contador (alertable) y el log de error. Ver el
+        # límite consciente en el ADR: esto es best-effort en el margen.
+        AUDIT_WRITE_FAILURES.inc()
+        log.error("audit_write_failed", error=str(exc), method=request.method,
+                  path=request.url.path, status_code=status_code, scope=scope)
 
 
 # ------------------------------------------------------ resolución de la key
@@ -189,21 +279,75 @@ async def _post_upstream(base_url: str, path: str,
         raise UpstreamDown(base_url, exc) from exc
 
 
-async def _proxy(request: Request, base_url: str, path: str) -> Response:
+async def _proxy(request: Request, base_url: str, path: str,
+                 extra_headers: dict[str, str] | None = None) -> Response:
+    """Reenvía al servicio interno. Los headers se arman **desde cero**, no se copian los del
+    cliente: así nada del exterior se cuela hacia adentro. Una ruta que necesita propagar un
+    header concreto lo pasa por `extra_headers`, explícito y a la vista."""
     assert client is not None
     body = await request.body()
+    headers = {"Content-Type": "application/json"} if body else {}
+    headers.update(extra_headers or {})
     try:
         upstream = await client.request(
             request.method,
             f"{base_url}{path}",
             content=body if body else None,
             params=dict(request.query_params),
-            headers={"Content-Type": "application/json"} if body else {},
+            headers=headers,
         )
     except httpx.RequestError:  # conexión rechazada, timeout, DNS
         return _bad_gateway(base_url)
     return Response(content=upstream.content, status_code=upstream.status_code,
                     media_type=upstream.headers.get("content-type", "application/json"))
+
+
+# ------------------------------------------------------------ consulta de auditoría
+
+@app.get("/audit", tags=["audit"], operation_id="listar_auditoria",
+         dependencies=[Depends(auth.require(auth.AUDIT_READ))])
+async def listar_auditoria(
+    actor: str | None = None,
+    scope: str | None = None,
+    subject: str | None = None,
+    desde: datetime | None = None,
+    hasta: datetime | None = None,
+    solo_denegados: bool = False,
+    limit: int = 100,
+) -> Response:
+    """Registro de auditoría, del más reciente al más viejo.
+
+    Sin filtros devuelve las últimas `limit` acciones. `subject` matchea por prefijo, para
+    que `socio` traiga también `socio/12345` (ver cómo se arma el subject en `_subject_de`).
+    """
+    query = select(AuditLog).order_by(AuditLog.occurred_at.desc())
+    if actor:
+        query = query.where(AuditLog.actor_name == actor)
+    if scope:
+        query = query.where(AuditLog.scope == scope)
+    if subject:
+        query = query.where(AuditLog.subject.startswith(subject))
+    if desde is not None:
+        query = query.where(AuditLog.occurred_at >= desde)
+    if hasta is not None:
+        query = query.where(AuditLog.occurred_at <= hasta)
+    if solo_denegados:
+        query = query.where(AuditLog.status_code.in_((401, 403, 429)))
+
+    async with get_sessionmaker()() as session:
+        filas = (await session.execute(query.limit(max(1, min(limit, 1000))))).scalars().all()
+
+    return JSONResponse([{
+        "occurred_at": f.occurred_at.isoformat() if f.occurred_at else None,
+        "actor_name": f.actor_name,
+        "actor_key_id": str(f.actor_key_id) if f.actor_key_id else None,
+        "scope": f.scope,
+        "method": f.method,
+        "path": f.path,
+        "subject": f.subject,
+        "status_code": f.status_code,
+        "details": f.details,
+    } for f in filas])
 
 
 # --------------------------------------------------------- gestión de keys
@@ -213,7 +357,7 @@ class CrearKeyRequest(BaseModel):
     scopes: list[str]
 
 
-@app.post("/keys", status_code=201,
+@app.post("/keys", status_code=201, tags=["keys"], operation_id="crear_key",
           dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
 async def crear_key(req: CrearKeyRequest) -> Response:
     """Crea una key con permisos acotados. El secreto se devuelve **una sola vez**."""
@@ -244,7 +388,8 @@ async def crear_key(req: CrearKeyRequest) -> Response:
     })
 
 
-@app.delete("/keys/{key_id}", dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
+@app.delete("/keys/{key_id}", tags=["keys"], operation_id="revocar_key",
+            dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
 async def revocar_key(key_id: uuid.UUID) -> Response:
     """Revoca una key (`active=False`) y la saca del cache **sin reiniciar el stack**.
 
@@ -266,7 +411,7 @@ async def revocar_key(key_id: uuid.UUID) -> Response:
     return JSONResponse(content={"id": str(key_id), "name": name, "active": False})
 
 
-@app.post("/keys/{key_id}/rotate",
+@app.post("/keys/{key_id}/rotate", tags=["keys"], operation_id="rotar_key",
           dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
 async def rotar_key(key_id: uuid.UUID) -> Response:
     """Genera un secreto nuevo para la misma identidad y scopes. El viejo deja de valer ya.
@@ -299,7 +444,8 @@ async def rotar_key(key_id: uuid.UUID) -> Response:
     })
 
 
-@app.get("/keys", dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
+@app.get("/keys", tags=["keys"], operation_id="listar_keys",
+         dependencies=[Depends(auth.require(auth.KEYS_ADMIN))])
 async def listar_keys() -> Response:
     """Lista las credenciales. Nunca devuelve secretos ni hashes."""
     async with get_sessionmaker()() as session:
@@ -323,10 +469,15 @@ class DeployRequest(BaseModel):
     description: str = ""
 
 
-@app.post("/flows/{name}", dependencies=[Depends(auth.require(auth.FLOWS_DEPLOY))])
-async def deploy_flow(name: str, req: DeployRequest) -> Response:
+@app.post("/flows/{name}", tags=["flows"], operation_id="desplegar_flow",
+          dependencies=[Depends(auth.require(auth.FLOWS_DEPLOY))])
+async def deploy_flow(name: str, req: DeployRequest, request: Request) -> Response:
     """Valida en parser-service y persiste en registry-service."""
     settings = get_settings()
+    # Enriquecimiento para la auditoría: la versión y el checksum permiten responder "¿esta
+    # versión es la que se publicó?" sin guardar el código. El checksum se agrega abajo,
+    # cuando el parser lo devuelve.
+    auth.detallar(request, version=req.version)
     try:
         parse_response = await _post_upstream(
             settings.parser_url, "/parse", {"source": req.source, "name": name})
@@ -338,6 +489,7 @@ async def deploy_flow(name: str, req: DeployRequest) -> Response:
                         status_code=parse_response.status_code,
                         media_type="application/json")
     parsed = parse_response.json()
+    auth.detallar(request, checksum=parsed.get("checksum"))
     if not parsed["valid"]:
         return JSONResponse(status_code=422, content={
             "detail": "El flow no pasó la validación",
@@ -368,7 +520,8 @@ async def deploy_flow(name: str, req: DeployRequest) -> Response:
     return JSONResponse(status_code=201, content=result)
 
 
-@app.post("/parse", dependencies=[Depends(auth.require(auth.FLOWS_READ))])
+@app.post("/parse", tags=["flows"], operation_id="validar_flow",
+          dependencies=[Depends(auth.require(auth.FLOWS_READ))])
 async def parse_only(request: Request) -> Response:
     """Solo valida: no persiste nada, por eso alcanza con flows:read."""
     return await _proxy(request, get_settings().parser_url, "/parse")
@@ -376,17 +529,20 @@ async def parse_only(request: Request) -> Response:
 
 # -------------------------------------------------------- routing registry
 
-@app.get("/flows", dependencies=[Depends(auth.require(auth.FLOWS_READ))])
+@app.get("/flows", tags=["flows"], operation_id="listar_flows",
+         dependencies=[Depends(auth.require(auth.FLOWS_READ))])
 async def list_flows(request: Request) -> Response:
     return await _proxy(request, get_settings().registry_url, "/flows")
 
 
-@app.get("/flows/{name}", dependencies=[Depends(auth.require(auth.FLOWS_READ))])
+@app.get("/flows/{name}", tags=["flows"], operation_id="listar_versiones_flow",
+         dependencies=[Depends(auth.require(auth.FLOWS_READ))])
 async def flow_versions(request: Request, name: str) -> Response:
     return await _proxy(request, get_settings().registry_url, f"/flows/{name}")
 
 
-@app.get("/flows/{name}/{version}",
+@app.get("/flows/{name}/{version}", tags=["flows"],
+         operation_id="obtener_version_flow",
          dependencies=[Depends(auth.require(auth.FLOWS_READ))])
 async def flow_version(request: Request, name: str, version: str) -> Response:
     return await _proxy(request, get_settings().registry_url,
@@ -395,31 +551,43 @@ async def flow_version(request: Request, name: str, version: str) -> Response:
 
 # -------------------------------------------------------- routing executor
 
-@app.post("/execute", dependencies=[Depends(auth.require(auth.INSTANCES_TRIGGER))])
+@app.post("/execute", tags=["instances"], operation_id="ejecutar_flow",
+          dependencies=[Depends(auth.require(auth.INSTANCES_TRIGGER))])
 async def execute(request: Request) -> Response:
-    return await _proxy(request, get_settings().executor_url, "/execute")
+    """Dispara un proceso. Con `Idempotency-Key`, reintentar no crea una instancia nueva.
+
+    El header se propaga explícitamente: el proxy no copia los del cliente, así que sin esta
+    línea la clave se perdería en el camino y quien la mandó creería estar protegido.
+    """
+    clave = request.headers.get("Idempotency-Key")
+    return await _proxy(request, get_settings().executor_url, "/execute",
+                        extra_headers={"Idempotency-Key": clave} if clave else None)
 
 
-@app.get("/instances", dependencies=[Depends(auth.require(auth.INSTANCES_READ))])
+@app.get("/instances", tags=["instances"], operation_id="listar_instancias",
+         dependencies=[Depends(auth.require(auth.INSTANCES_READ))])
 async def instances(request: Request) -> Response:
     return await _proxy(request, get_settings().executor_url, "/instances")
 
 
-@app.get("/instances/{instance_id}",
+@app.get("/instances/{instance_id}", tags=["instances"],
+         operation_id="obtener_instancia",
          dependencies=[Depends(auth.require(auth.INSTANCES_READ))])
 async def instance(request: Request, instance_id: str) -> Response:
     return await _proxy(request, get_settings().executor_url,
                         f"/instances/{instance_id}")
 
 
-@app.post("/instances/{instance_id}/signal",
+@app.post("/instances/{instance_id}/signal", tags=["instances"],
+          operation_id="enviar_signal",
           dependencies=[Depends(auth.require(auth.INSTANCES_SIGNAL))])
 async def signal(request: Request, instance_id: str) -> Response:
     return await _proxy(request, get_settings().executor_url,
                         f"/instances/{instance_id}/signal")
 
 
-@app.post("/instances/{instance_id}/retry",
+@app.post("/instances/{instance_id}/retry", tags=["instances"],
+          operation_id="reintentar_instancia",
           dependencies=[Depends(auth.require(auth.INSTANCES_RETRY))])
 async def retry(request: Request, instance_id: str) -> Response:
     return await _proxy(request, get_settings().executor_url,
@@ -431,13 +599,29 @@ _ENTITY_SCOPES = {"GET": auth.ENTITIES_READ,      # incluye la vista 360
                   "PATCH": auth.ENTITIES_WRITE}
 
 
-@app.api_route("/entities/{rest:path}", methods=["GET", "POST", "PATCH"],
+# Un decorador por método: `api_route(methods=[...])` genera una operación por método y
+# todas heredarían el mismo operation_id, que en un cliente generado colisiona.
+@app.api_route("/entities/{rest:path}", methods=["GET"], tags=["entities"],
+               operation_id="consultar_entities",   # incluye la vista 360
+               dependencies=[Depends(auth.require_por_metodo(_ENTITY_SCOPES))])
+@app.api_route("/entities/{rest:path}", methods=["POST"], tags=["entities"],
+               operation_id="crear_entity",
+               dependencies=[Depends(auth.require_por_metodo(_ENTITY_SCOPES))])
+@app.api_route("/entities/{rest:path}", methods=["PATCH"], tags=["entities"],
+               operation_id="actualizar_entity",
                dependencies=[Depends(auth.require_por_metodo(_ENTITY_SCOPES))])
 async def entities(request: Request, rest: str) -> Response:
     return await _proxy(request, get_settings().executor_url, f"/entities/{rest}")
 
 
-@app.api_route("/relations/{rest:path}", methods=["GET", "POST", "PATCH"],
+@app.api_route("/relations/{rest:path}", methods=["GET"], tags=["entities"],
+               operation_id="consultar_relations",
+               dependencies=[Depends(auth.require_por_metodo(_ENTITY_SCOPES))])
+@app.api_route("/relations/{rest:path}", methods=["POST"], tags=["entities"],
+               operation_id="crear_relation",
+               dependencies=[Depends(auth.require_por_metodo(_ENTITY_SCOPES))])
+@app.api_route("/relations/{rest:path}", methods=["PATCH"], tags=["entities"],
+               operation_id="actualizar_relation",
                dependencies=[Depends(auth.require_por_metodo(_ENTITY_SCOPES))])
 async def relations(request: Request, rest: str) -> Response:
     return await _proxy(request, get_settings().executor_url, f"/relations/{rest}")
@@ -446,18 +630,25 @@ async def relations(request: Request, rest: str) -> Response:
 # -------------------------------------------------------- routing composer
 
 @app.api_route("/compose", methods=["POST"],
+               tags=["composer"], operation_id="componer_draft",
                dependencies=[Depends(auth.require(auth.COMPOSE_WRITE))])
 async def compose(request: Request) -> Response:
     return await _proxy(request, get_settings().composer_url, "/compose")
 
 
 @app.api_route("/drafts", methods=["GET"],
+               tags=["composer"], operation_id="listar_drafts",
                dependencies=[Depends(auth.require(auth.COMPOSE_READ))])
 async def drafts(request: Request) -> Response:
     return await _proxy(request, get_settings().composer_url, "/drafts")
 
 
-@app.api_route("/drafts/{rest:path}", methods=["GET", "POST"],
+@app.api_route("/drafts/{rest:path}", methods=["GET"], tags=["composer"],
+               operation_id="obtener_draft",
+               dependencies=[Depends(auth.require_por_metodo(
+                   {"GET": auth.COMPOSE_READ, "POST": auth.COMPOSE_WRITE}))])
+@app.api_route("/drafts/{rest:path}", methods=["POST"], tags=["composer"],
+               operation_id="operar_draft",   # p.ej. /drafts/{id}/approve
                dependencies=[Depends(auth.require_por_metodo(
                    {"GET": auth.COMPOSE_READ, "POST": auth.COMPOSE_WRITE}))])
 async def draft_ops(request: Request, rest: str) -> Response:

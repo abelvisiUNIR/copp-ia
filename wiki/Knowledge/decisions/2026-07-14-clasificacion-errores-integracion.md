@@ -2,13 +2,13 @@
 project: copp-ia
 date: 2026-07-14
 status: accepted
-provenance: copp-ia@devyos@2647198
+provenance: copp-ia@devyos@ef7af86
 tags: [adr, executor, adapters, resiliencia, errores, retry]
 ---
 
 # ADR (wiki): clasificar los errores de integración en transitorios vs permanentes
 
-> Provenance: `copp-ia@devyos@2647198`. Decisión tomada durante el work-stream
+> Provenance: `copp-ia@devyos@ef7af86`. Decisión tomada durante el work-stream
 > `resiliencia-executor` (Chunk 2). **No** es un ADR del arquitecto (los suyos son
 > ADR-001..005): es una decisión del equipo sobre el comportamiento del executor.
 

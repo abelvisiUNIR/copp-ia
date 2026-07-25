@@ -1,0 +1,176 @@
+{
+  "title": "TeleFlow · Negocio",
+  "uid": "teleflow-negocio",
+  "description": "Trabajo pendiente y resultado de los procesos. Complementa el dashboard Overview (que es técnico: requests, latencia, errores).",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-24h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Tareas humanas pendientes",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 20 },
+              { "color": "red", "value": 50 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(teleflow_human_task_backlog)",
+          "legendFormat": "backlog"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Espera más larga en una tarea humana",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 86400 },
+              { "color": "red", "value": 259200 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "max(teleflow_human_task_oldest_seconds)",
+          "legendFormat": "más vieja"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Procesos en curso",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(teleflow_instances_current)",
+          "legendFormat": "vivos"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Procesos fallidos (24h)",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(teleflow_instances_total{status=\"FAILED\"}[24h])) or vector(0)",
+          "legendFormat": "fallidos"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Backlog de human_tasks por step",
+      "description": "Cuántas instancias esperan una señal en cada step, ahora mismo. Es la cola de trabajo de las personas.",
+      "type": "bargauge",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 5 },
+      "options": { "displayMode": "gradient", "orientation": "horizontal" },
+      "targets": [
+        {
+          "expr": "sum by (flow_name, step_name) (teleflow_human_task_backlog) > 0",
+          "legendFormat": "{{flow_name}} · {{step_name}}",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Antigüedad del backlog por step",
+      "description": "Hace cuánto espera la instancia más vieja de cada step. Insumo de SLA: el pico importa más que el promedio.",
+      "type": "timeseries",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "expr": "sum by (flow_name, step_name) (teleflow_human_task_oldest_seconds)",
+          "legendFormat": "{{flow_name}} · {{step_name}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Procesos por estado (en curso)",
+      "description": "Solo estados vivos. Los terminales se ven en 'Procesos terminados' — teleflow_instances_current no los incluye.",
+      "type": "timeseries",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 14 },
+      "fieldConfig": {
+        "defaults": { "custom": { "stacking": { "mode": "normal" }, "fillOpacity": 30 } }
+      },
+      "targets": [
+        {
+          "expr": "sum by (status) (teleflow_instances_current)",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Procesos terminados por hora",
+      "type": "timeseries",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 14 },
+      "targets": [
+        {
+          "expr": "sum by (flow_name, status) (increase(teleflow_instances_total[1h]))",
+          "legendFormat": "{{flow_name}} · {{status}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Procesos en curso por flow",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "targets": [
+        {
+          "expr": "sum by (flow_name) (teleflow_instances_current)",
+          "legendFormat": "{{flow_name}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Steps con fallas (rate 5m)",
+      "description": "Dónde se rompe el negocio, por step. Vacío es lo esperable.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "targets": [
+        {
+          "expr": "sum by (flow_name, step_name) (rate(teleflow_steps_total{result!=\"ok\"}[5m]))",
+          "legendFormat": "{{flow_name}} · {{step_name}}"
+        }
+      ]
+    }
+  ]
+}

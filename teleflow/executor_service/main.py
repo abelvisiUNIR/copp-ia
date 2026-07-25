@@ -14,7 +14,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -26,6 +26,7 @@ from teleflow.common.logging import setup_logging
 from teleflow.common.models import InstanceTransition, ProcessInstance
 from teleflow.common.observability import setup_observability
 from teleflow.dsl.parser import get_parser
+from teleflow.executor_service.business_metrics import BusinessMetricsCollector
 from teleflow.executor_service.domain import DomainLoader
 from teleflow.executor_service.engine import ExecutionEngine
 from teleflow.executor_service.entities import DomainError, EntityService
@@ -52,6 +53,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                              entity_service, settings)
     rule_engine = RuleEngine(sessionmaker, domain_loader, event_bus, engine, settings)
     view360 = View360Service(sessionmaker, domain_loader)
+    business_metrics = BusinessMetricsCollector(sessionmaker, settings)
 
     try:
         await event_bus.connect()
@@ -59,11 +61,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.warning("rabbitmq_unavailable_at_startup", error=str(exc))
     await engine.start()
     await rule_engine.start()
+    # Primer refresh en el arranque: sin esto el backlog recién aparece en /metrics tras el
+    # primer intervalo, y un executor que reinicia mostraría cero trabajo pendiente mientras
+    # tanto. Si la DB no está lista todavía, el loop lo reintenta solo.
+    try:
+        await business_metrics.refresh()
+    except Exception as exc:
+        log.warning("business_metrics_initial_refresh_failed", error=str(exc))
+    await business_metrics.start()
 
     state.update(engine=engine, rule_engine=rule_engine, entities=entity_service,
-                 view360=view360, bus=event_bus, domain=domain_loader)
+                 view360=view360, bus=event_bus, domain=domain_loader,
+                 business_metrics=business_metrics)
     log.info("executor_started", worker_concurrency=settings.worker_concurrency)
     yield
+    await business_metrics.stop()
     await rule_engine.stop()
     await engine.stop()
     await event_bus.close()
@@ -87,18 +99,28 @@ class ExecuteRequest(BaseModel):
     version: str = "latest"
     payload: dict[str, Any] = Field(default_factory=dict)
     correlation_id: str | None = None
+    # Alternativa al header `Idempotency-Key`, para quien llame al executor directo.
+    idempotency_key: str | None = None
 
 
 @app.post("/execute", status_code=202)
-async def execute(req: ExecuteRequest) -> dict[str, Any]:
+async def execute(
+    req: ExecuteRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    """Dispara un proceso. Con `Idempotency-Key`, reintentar no crea una instancia nueva.
+
+    El header manda sobre el campo del cuerpo: es la convención que los clientes conocen.
+    """
     engine: ExecutionEngine = state["engine"]
     return await engine.trigger(req.flow_name, req.version, req.payload,
-                                req.correlation_id)
+                                req.correlation_id,
+                                idempotency_key or req.idempotency_key)
 
 
 @app.post("/internal/execute", status_code=202, include_in_schema=False)
 async def internal_execute(req: ExecuteRequest) -> dict[str, Any]:
-    return await execute(req)
+    return await execute(req, idempotency_key=None)
 
 
 @app.get("/instances")

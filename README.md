@@ -17,7 +17,7 @@ Implementación del [Documento de Arquitectura v1.0](docs/TeleFlow-Arquitectura-
 | `composer-service` | 8004 | Abstracción LLM (ADR-003). Borradores `.tflow` desde lenguaje natural |
 | `review-ui` | 3100 | UI React para revisión PR-style de flows generados por IA |
 | `postgres` / `redis` / `rabbitmq` | 5432 / 6379 / 5672 | Estado durable · cache + pub/sub + sleep · bus de eventos |
-| `prometheus` / `grafana` | 9090 / 3000 | Métricas y dashboards |
+| `prometheus` / `grafana` | 9090 / 3001 | Métricas y dashboards |
 
 ## Quickstart (desarrollo / staging)
 
@@ -30,7 +30,7 @@ Las migraciones Alembic corren automáticamente (servicio `migrate`).
 
 - API gateway: http://localhost:8000/docs
 - Review UI: http://localhost:3100
-- Grafana: http://localhost:3000 (admin/admin)
+- Grafana: http://localhost:3001 (admin/admin) — `GRAFANA_PORT` lo cambia; 3000 suele estar ocupado
 - RabbitMQ mgmt: http://localhost:15672 (teleflow/teleflow)
 
 ### Desplegar el dominio de ejemplo (Ceibal)
@@ -86,6 +86,20 @@ tflow status <instance_id>     # → COMPLETED
 
 El executor puede reiniciarse sin perder instancias dormidas: el estado vive en Postgres y la reactivación llega por Redis pub/sub (ADR-002).
 
+### Disparos idempotentes
+
+Un reintento por timeout —el más común— crearía un segundo expediente: dos notificaciones al ciudadano, dos llamadas a la integración. Para evitarlo, mandá una `Idempotency-Key`:
+
+```bash
+curl -X POST "$API/execute" -H "X-TeleFlow-API-Key: $KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"flow_name":"venta_internet_hogar","payload":{"cliente_id":"c-1"}}'
+```
+
+La primera llamada crea la instancia; las repeticiones devuelven **la misma**, con `idempotent_replay: true`. La clave **no expira**: vive con la instancia, así que un reintento tardío sigue protegido.
+
+**Es opcional**: sin clave, cada llamada dispara (el comportamiento de siempre). Y **la misma clave con otro pedido da 409**, en vez de devolver la instancia vieja — recibir el resultado de otra operación creyendo que la propia se ejecutó es peor que un error visible.
+
 ### Capa IA (compose → review → deploy)
 
 ```bash
@@ -94,7 +108,7 @@ tflow compose alta_socio --description "Proceso de alta de socio con validación
 tflow approve <draft_id> --version 1.0.0
 ```
 
-El proveedor LLM se configura por instancia: `LLM_PROVIDER=anthropic|openai|ollama|stub` (ADR-003). Sin API key configurada se usa el modo `stub` (esqueleto editable).
+El proveedor LLM se configura por instancia: `LLM_PROVIDER=anthropic|openai|ollama|stub` (ADR-003). El default es `stub`, que genera un esqueleto editable a mano y permite recorrer el ciclo compose → review → deploy sin credenciales. **Un proveedor real sin `LLM_API_KEY` hace que `composer-service` no arranque**: la alternativa —caer al `stub`— entregaba un esqueleto que parecía generado por el modelo.
 
 ## El lenguaje TeleFlow DSL v2
 
@@ -126,10 +140,74 @@ tests/               pytest (parser, validador, evaluador, DAG)
 python -m venv .venv && .venv\Scripts\activate
 pip install -e .[dev]
 pytest
-mypy teleflow
+mypy .          # todo el repo, igual que CI
 ```
 
 Convenciones: tipado estricto, Pydantic v2 en la API, dataclasses en el AST, structlog con `instance_id`/`flow_name`/`step_name`, pytest-asyncio, Alembic.
+
+`mypy .` cubre el repo entero (64 archivos) y es exactamente lo que corre CI. A los tests **no** se les exigen anotaciones de firma (`[tool.mypy.overrides]` en `pyproject.toml`): lo que se busca ahí es que un cambio de firma en `teleflow/` rompa el type check de sus tests, no anotar 350 funciones de test.
+
+Los tests e2e (`tests/e2e/`) requieren el stack levantado; si el gateway no responde **se saltan**, así `pytest` sigue verde sin Docker.
+
+### Contrato OpenAPI
+
+```bash
+tflow openapi                          # escribe docs/openapi.json
+tflow openapi --output otro/lado.json
+```
+
+Sale del código (importa la app), así que **no hace falta el stack levantado**. Cada ruta declara `operation_id` y `tags` explícitos, para que un cliente generado tenga nombres estables: si se renombra la función Python, el método del cliente no cambia.
+
+### Auditoría
+
+Toda acción de **escritura** y **todo intento denegado** (401/403/429, incluso de lectura) queda registrado en la tabla `audit_log`: quién, qué, sobre qué, cuándo y con qué resultado. Las lecturas exitosas no se registran, salvo la lectura de la auditoría misma.
+
+```bash
+curl "$API/audit?limit=50"                    -H "X-TeleFlow-API-Key: $KEY"
+curl "$API/audit?scope=flows:deploy"          -H "X-TeleFlow-API-Key: $KEY"
+curl "$API/audit?solo_denegados=true"         -H "X-TeleFlow-API-Key: $KEY"
+curl "$API/audit?subject=socio&desde=2026-07-01" -H "X-TeleFlow-API-Key: $KEY"
+```
+
+Requiere el scope `audit:read`, que se otorga explícitamente: no lo hereda `keys:admin` ni ningún otro.
+
+**No se guarda el cuerpo de los requests** — por ahí pasan datos personales, y esta es la tabla que más tiempo se conserva. De un deploy se guardan la versión y el **checksum** del source, que responden "¿esta versión es la que se publicó?" sin almacenar el código.
+
+**La tabla no se purga sola.** La retención es política de cada organismo: un despliegue con mucho tráfico de escritura va a querer una política de archivado. Borrar auditoría por un default del producto sería peor que la tabla creciendo.
+
+## Observabilidad
+
+Prometheus (`:9090`) scrapea `/metrics` de los 5 servicios cada 15 s. Grafana (`:3001`) trae
+dos dashboards provisionados en la carpeta *TeleFlow*:
+
+| Dashboard | Responde |
+|---|---|
+| **TeleFlow · Overview** | Salud técnica: requests, latencia p95, tasa de error, throughput de steps |
+| **TeleFlow · Negocio** | Trabajo pendiente: backlog de human_tasks por step y su antigüedad, procesos en curso por estado, terminados por hora |
+
+Las métricas de negocio son de dos clases y no se mezclan:
+
+- **Counters de eventos** (`teleflow_instances_total`, `teleflow_steps_total`): cuentan lo que
+  ya pasó, en el momento en que pasa.
+- **Gauges de estado actual** (`teleflow_instances_current`, `teleflow_human_task_backlog`,
+  `teleflow_human_task_oldest_seconds`): los recalcula un scanner del executor cada
+  `BUSINESS_METRICS_INTERVAL` (30 s) agregando `process_instances`. Un counter no puede
+  responder "¿cuánta gente tiene trabajo pendiente ahora?" — para eso están estos.
+
+Los gauges cubren solo los estados **vivos** (`TRIGGERED`, `IN_PROGRESS`, `RETRYING`,
+`WAITING_SIGNAL`): los terminales ya los cuenta `teleflow_instances_total` y agregarlos
+obligaría a escanear toda la historia de la tabla en cada ciclo.
+
+## Doc vs. código: discrepancias conocidas
+
+La doc consolidada (`.md` y PDF en `docs/`) es más vieja que los `.typ` y que el código. **Ante conflicto, el orden de verdad es: código > `.typ` > `.md`/README.**
+
+| Tema | Dice la doc | Es |
+|---|---|---|
+| Puerto Grafana | 3000 (`.md` §9.2) | **3001** en el host (`docker-compose.yml:158`); 3000 es el puerto interno |
+| Proveedores LLM | 3 (`.md` §9.3) | **4**: se omite `stub`, que además es el default del compose sin API key |
+| Rule engine / vista 360 | gateway (diagrama `.md` §7.1) | **executor-service**; el gateway es proxy puro. El diagrama es vista lógica, no ubicación física |
+| `mypy --strict` | convención vigente | ✅ vigente y en 0 — pero **no pasaba** hasta el saneamiento de 2026-07-09 (eran 236 errores) |
 
 ## Producción
 

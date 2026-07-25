@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Text,
     UniqueConstraint,
     Uuid,
@@ -57,6 +58,13 @@ class ProcessInstance(Base):
     flow_name: Mapped[str] = mapped_column(String(200), index=True)
     flow_version: Mapped[str] = mapped_column(String(50))
     correlation_id: Mapped[str | None] = mapped_column(String(200), index=True, nullable=True)
+    # Dedup de disparos: una clave = una instancia, para siempre. **Único**, a diferencia de
+    # `correlation_id`, que es un id de traza y puede repetirse legítimamente entre varios
+    # procesos de la misma transacción. En Postgres los NULL no colisionan, así que las
+    # instancias sin clave —la mayoría— no se estorban.
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(200), unique=True, nullable=True
+    )
     status: Mapped[str] = mapped_column(String(30), index=True, default="TRIGGERED")
     trigger_payload: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
     context: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
@@ -163,6 +171,13 @@ class FlowDraft(Base):
     base_source: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
     comments: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    # Proveedor que **generó** este borrador (no el configurado al leerlo): un borrador del
+    # `stub` es un esqueleto para editar a mano, y quien lo revisa tiene que saberlo.
+    # Nullable por los borradores anteriores a la columna.
+    provider: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    # Resultado de pasar `source` por el parser al componer: {parses, issues, checked_at}.
+    # `parses: null` = no se pudo verificar (parser caído), que no es lo mismo que "compila".
+    validation: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -209,3 +224,41 @@ class ApiKey(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class AuditLog(Base):
+    """Quién hizo qué, cuándo y con qué resultado. Append-only.
+
+    Registra las acciones de **escritura** y **todo intento denegado** (401/403), incluso de
+    lectura: un intento fallido de desplegar es lo que una auditoría tiene que mostrar. Las
+    lecturas que salen bien no se registran (ver el ADR de auditoría persistida).
+
+    **No guarda el cuerpo del request.** Por ahí pasan datos personales, y esta es la tabla
+    que más tiempo se conserva y más gente puede leer. Para el deploy —donde el cuerpo
+    importa— se guarda el checksum en `details`.
+
+    Nunca se actualiza ni se borra desde la API. La retención es política del organismo.
+    """
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    # Identidad de la key. `actor_name` se conserva aunque la key se revoque después: la fila
+    # de `api_keys` no se borra justamente para que esto siga significando algo.
+    actor_name: Mapped[str] = mapped_column(String(200), index=True)
+    # None = key de bootstrap (env), que no está en la tabla `api_keys`.
+    actor_key_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
+    # Scope exigido por la ruta = qué clase de acción se intentó. Vacío en un 401, donde el
+    # request nunca llegó a la ruta.
+    scope: Mapped[str] = mapped_column(String(50), default="", index=True)
+    method: Mapped[str] = mapped_column(String(10))
+    path: Mapped[str] = mapped_column(String(500))
+    # Identificador del recurso tocado (nombre del flow, instance_id, entidad).
+    subject: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    status_code: Mapped[int] = mapped_column(Integer)
+    # Enriquecimiento opcional de la ruta (p.ej. el checksum del source en un deploy). Que
+    # falte no invalida el registro: es detalle, no la traza.
+    details: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)

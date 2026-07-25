@@ -13,6 +13,8 @@ la promoción de uno a otro es deliberada, nunca automática).
 ## Páginas
 
 - [[roadmap]] — **guía de desarrollo** por fases (aprender → CI → calidad → mejoras → producción).
+- [[backlog-hardening]] — huecos concretos con evidencia (auditoría, registry sin tests, rate
+  limit por proceso, `/execute` sin idempotencia, `review-ui`, backup/restore).
 
 ### guides
 - [[flujos-negocio]] — recorridos end-to-end por API: durable sleep + event-driven Ceibal + 360.
@@ -30,6 +32,21 @@ la promoción de uno a otro es deliberada, nunca automática).
   no instalar `types-networkx` (rompe por numpy 3.12 vs target 3.11).
 - [[2026-07-14-clasificacion-errores-integracion]] — (wiki/executor) el adapter clasifica
   transitorio vs permanente; el engine solo reintenta lo transitorio, con full jitter.
+- [[2026-07-24-alcance-mypy]] — (wiki/tooling) `mypy .` cubre el repo entero y es el mismo
+  comando en CI y en la doc; los tests se chequean sin exigirles anotaciones de firma.
+- [[2026-07-24-metricas-de-negocio-gauges]] — (wiki/observabilidad) el estado actual
+  (backlog de human_tasks, procesos vivos) va en gauges agregados por SQL desde
+  `process_instances`; los counters miden eventos y no responden sobre el presente.
+- [[2026-07-25-auditoria-persistida]] — (wiki/gateway, **proposed**) se audita toda escritura
+  y todo intento denegado, sin guardar el cuerpo; el registro se engancha en `auth.require`
+  para que ninguna ruta nueva quede afuera.
+- [[2026-07-25-composer-llm-fallos-explicitos]] — (wiki/composer) sin proveedor real
+  configurado el servicio no arranca (nunca cae al `stub` en silencio); el borrador se valida
+  contra el parser al componer y se guarda marcado; los errores del LLM se clasifican.
+
+### concepts
+- [[fallas-silenciosas]] — el patrón que más veces apareció: mecanismos que parecen proteger
+  y avisan sin cortar. Tres casos verificados y las preguntas para detectar el próximo.
 
 ### investigations
 - [[2026-07-09-validacion-doc-vs-codigo]] — doc vs código: 26/26 tests ✅, mypy strict ❌,

@@ -37,11 +37,24 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = ""
     llm_base_url: str = ""
+    # Techo de tokens de la respuesta. Un `.tflow` completo entra holgado en 4096; subirlo
+    # tiene sentido para flows grandes. Si la respuesta se corta, el composer lo dice en vez
+    # de guardar un borrador truncado.
+    llm_max_tokens: int = 4096
+    # Reintentos ante fallos **transitorios** del proveedor (5xx, 408, 429, red). Lo
+    # permanente (4xx, credencial mala) falla en el primer intento.
+    llm_retry_attempts: int = 3
+    llm_retry_base_delay: float = 1.0
+    llm_retry_max_delay: float = 20.0
 
     # Executor
     worker_concurrency: int = 10
     timer_scan_interval: int = 60
     domain_cache_ttl: int = 30
+    # Cada cuánto se recalculan los gauges de negocio (instancias vivas, backlog de
+    # human_tasks). Es una agregación sobre el working set de `process_instances`, no sobre
+    # toda la historia. Prometheus scrapea cada 15 s: bajar de eso no agrega resolución.
+    business_metrics_interval: int = 30
     events_exchange: str = "teleflow.domain.events"
 
     # Bus de eventos: reintentos antes de mandar el evento a la DLQ (<queue>.dlq).

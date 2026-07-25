@@ -2,10 +2,13 @@
 
 Sin infraestructura: httpx y smtplib se mockean. Cubre casos felices y de error.
 """
+import smtplib
+from typing import Any
+
+import httpx
 import pytest
 
 from teleflow.dsl.ast_nodes import IntegrationDef, Ref, StepDef
-from teleflow.executor_service import adapters
 from teleflow.executor_service.adapters import (
     RetryableStepError,
     StepExecutionError,
@@ -92,12 +95,12 @@ def _install_fake_httpx(monkeypatch, resp, capture):
             capture.update(kw)
             return resp
 
-    monkeypatch.setattr(adapters.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
 
 
 async def test_rest_ok_resuelve_env_y_payload(monkeypatch):
     monkeypatch.setenv("LMS_URL", "https://lms.example")
-    cap: dict = {}
+    cap: dict[str, Any] = {}
     _install_fake_httpx(monkeypatch, _FakeResp(200, {"credential_id": "c1"}), cap)
 
     step = StepDef(name="crear", type="automated", method="POST", path="/api/cred",
@@ -161,9 +164,9 @@ async def test_rest_error_de_red_es_retryable(monkeypatch):
             return False
 
         async def request(self, method, path, **kw):
-            raise adapters.httpx.ConnectTimeout("timeout")
+            raise httpx.ConnectTimeout("timeout")
 
-    monkeypatch.setattr(adapters.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
     step, integ = _rest_step_e_integracion()
     with pytest.raises(RetryableStepError):
         await run_automated(step, integ, {})
@@ -183,13 +186,13 @@ def _install_smtp_que_falla(monkeypatch, exc):
         def send_message(self, msg):
             raise exc
 
-    monkeypatch.setattr(adapters.smtplib, "SMTP", _SMTP)
+    monkeypatch.setattr(smtplib, "SMTP", _SMTP)
 
 
 async def test_smtp_4xx_es_retryable(monkeypatch):
     """4xx SMTP = transitorio (greylisting, mailbox llena)."""
     _install_smtp_que_falla(
-        monkeypatch, adapters.smtplib.SMTPResponseException(451, b"try again"))
+        monkeypatch, smtplib.SMTPResponseException(451, b"try again"))
     step = StepDef(name="n", type="notification", channel="email", to="a@x.com")
     integ = IntegrationDef(name="mail", config={"type": "smtp", "host": "h"})
     with pytest.raises(RetryableStepError):
@@ -199,7 +202,7 @@ async def test_smtp_4xx_es_retryable(monkeypatch):
 async def test_smtp_5xx_es_permanente(monkeypatch):
     """5xx SMTP = el mail no existe / rechazado: reintentar no lo arregla."""
     _install_smtp_que_falla(
-        monkeypatch, adapters.smtplib.SMTPResponseException(550, b"no such user"))
+        monkeypatch, smtplib.SMTPResponseException(550, b"no such user"))
     step = StepDef(name="n", type="notification", channel="email", to="a@x.com")
     integ = IntegrationDef(name="mail", config={"type": "smtp", "host": "h"})
     with pytest.raises(StepExecutionError) as exc_info:
@@ -219,7 +222,7 @@ async def test_notification_logged_sin_integracion():
 
 
 async def test_notification_email_smtp(monkeypatch):
-    sent: dict = {}
+    sent: dict[str, Any] = {}
 
     class _SMTP:
         def __init__(self, host, port, timeout=None):
@@ -236,7 +239,7 @@ async def test_notification_email_smtp(monkeypatch):
             sent["to"] = msg["To"]
             sent["body"] = msg.get_content().strip()
 
-    monkeypatch.setattr(adapters.smtplib, "SMTP", _SMTP)
+    monkeypatch.setattr(smtplib, "SMTP", _SMTP)
     step = StepDef(name="n", type="notification", channel="email",
                    to="ana@x.com", template="Bienvenida")
     integ = IntegrationDef(name="mail",
