@@ -118,6 +118,14 @@ Al tocar algo que promete una garantía, preguntarse las cuatro:
    **obligue a decidir**: que la clasificación de scopes sea exhaustiva, para que uno nuevo no
    pueda quedar afuera por omisión. Automático no alcanza; hay que cerrar el hueco por defecto.
 
+**Un test vacuo es peor que no tener test**, porque desactiva la sospecha: el ítem queda
+marcado como cubierto. En [[review-ui-tests]] hicieron falta **tres intentos** para que el test
+de una regresión visual fallara con el defecto puesto — las dos primeras versiones pasaban
+igual, y solo midiendo la geometría en el navegador se entendió por qué (el estado no era el
+que rompía, el nombre no tenía el largo justo, y la assertion miraba lo que no era: el pill
+partido **igual queda dentro** de la tarjeta; lo que lo delata es que el navegador lo renderiza
+como dos cajas).
+
 Y al escribir el test que lo fija: **verificarlo con una mutación**. En
 `observabilidad-negocio` el test de contrato dashboards↔métricas se comprobó rompiendo a
 propósito el nombre de una métrica (tiene que fallar) — porque un test vacuo que no puede

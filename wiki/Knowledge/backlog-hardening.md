@@ -100,7 +100,8 @@ idempotencia con instancias ya creadas en producción obliga a decidir qué hace
 duplicados que ya existen.
 
 ## 5. `review-ui`: el componente con más poder y menos cobertura
-**Estado:** abierto · **Prioridad:** media
+**Estado:** ✅ **cerrado 2026-07-25** ([[review-ui-tests]], `a816b93`) — 8 tests de Playwright
+sobre el camino crítico, corriendo en el job e2e de CI. · **Prioridad original:** media
 
 **Hecho.** 266 líneas en 4 archivos (`App.jsx` 186, `api.js` 43, `diff.js` 31, `main.jsx` 6).
 Cero tests, sin lint. CI solo buildea la imagen Python (`ci.yml:78-84`); el front se construye
@@ -122,7 +123,8 @@ arreglo posible**. Un `pg_dump` + restore verificado por un test vale hoy más q
 charts, y no depende de tener k8s.
 
 ## 7. `review-ui` se buildea sin lockfile — el bundle no es reproducible
-**Estado:** abierto · **Prioridad:** media-baja
+**Estado:** ✅ **cerrado 2026-07-25** (`2e9630c`) — lockfile versionado, `npm ci` en el
+`Dockerfile` y `.dockerignore`. · **Prioridad original:** media-baja
 
 **Hecho.** `review-ui/package.json` declara rangos flotantes (`react: ^18.3.1`,
 `vite: ^5.3.1`) y **no hay `package-lock.json` versionado**. El `Dockerfile` hace
@@ -152,8 +154,9 @@ segundo no cambia nada.
 1. ~~Auditoría persistida (1)~~ ✅ · ~~Tests del registry (2)~~ ✅ — ambos hechos 2026-07-25.
 2. ~~Idempotencia de `/execute` (4)~~ ✅ · ~~Estado compartido del gateway (3)~~ ✅ — ambos
    hechos 2026-07-25.
-3. **Antes de Fase E:** backup/restore (6), la red de seguridad de `review-ui` (5) y el
-   lockfile del front (7).
+3. ~~`review-ui` (5)~~ ✅ · ~~lockfile del front (7)~~ ✅ — hechos 2026-07-25. **Queda
+   backup/restore (6)**, el único abierto: es lo único de la lista de Fase E que, si falta el
+   día que se necesita, no tiene arreglo.
 
 ## Hallazgos laterales, todavía abiertos
 - **Ni Postgres ni Redis se publican al host** en `docker-compose.yml`. No es un bug —es más
