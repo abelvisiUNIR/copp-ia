@@ -18,6 +18,7 @@ from typing import Any, Mapping
 import httpx
 
 from teleflow.common.logging import get_logger
+from teleflow.common.retry import RETRYABLE_STATUS, is_retryable_status
 from teleflow.dsl.ast_nodes import IntegrationDef, StepDef
 from teleflow.dsl.evaluator import evaluate
 
@@ -35,13 +36,9 @@ class RetryableStepError(StepExecutionError):
     """Fallo transitorio: el mismo request más tarde puede salir bien (503, timeout, red)."""
 
 
-# 408 Request Timeout y 429 Too Many Requests son transitorios pese a ser 4xx
-RETRYABLE_STATUS = frozenset({408, 429})
-
-
-def is_retryable_status(status_code: int) -> bool:
-    """5xx = el otro lado está roto ahora; 4xx = el request está mal (salvo 408/429)."""
-    return status_code >= 500 or status_code in RETRYABLE_STATUS
+# El criterio transitorio/permanente vive en `common.retry`: lo comparten estos adapters y
+# el composer. Se re-exporta acá para no romper los imports existentes.
+__all__ = ["RETRYABLE_STATUS", "is_retryable_status"]
 
 
 def resolve_env(value: Any) -> Any:

@@ -6,12 +6,13 @@ había generado el modelo, y el log registraba el proveedor *pedido*. Estos test
 el stub solo aparece cuando se lo pide explícitamente.
 """
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from teleflow.common.config import Settings
+from teleflow.composer_service import providers
 from teleflow.composer_service.main import _validate_source
 from teleflow.composer_service.providers import (
     AnthropicProvider,
@@ -88,6 +89,167 @@ def test_proveedor_desconocido_levanta(typo):
     with pytest.raises(LLMConfigurationError) as exc:
         get_provider(_settings(typo, api_key="k"))
     assert "no es un proveedor conocido" in str(exc.value)
+
+
+# ------------------------------------------- reintentos: solo lo transitorio
+
+class _RespuestaHTTP:
+    """Respuesta con status arbitrario, para probar la clasificación."""
+
+    def __init__(self, status_code, payload=None, text="", headers=None):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+        self.text = text
+        self.headers = headers or {}
+
+    def json(self):
+        return self._payload
+
+
+class _ClienteSecuencia:
+    """Devuelve (o levanta) un elemento por llamada, y cuenta los intentos."""
+
+    def __init__(self, secuencia):
+        self.secuencia = list(secuencia)
+        self.llamadas = 0
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, headers=None, json=None):
+        item = self.secuencia[min(self.llamadas, len(self.secuencia) - 1)]
+        self.llamadas += 1
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def _proveedor_responde(monkeypatch, secuencia):
+    import httpx
+
+    cliente = _ClienteSecuencia(secuencia)
+    monkeypatch.setattr(httpx, "AsyncClient", cliente)
+    return cliente
+
+
+def _settings_llm(**kwargs):
+    # base/max delay en 0: los tests prueban la decisión de reintentar, no el reloj.
+    base: dict[str, Any] = dict(llm_provider="anthropic", llm_api_key="k",
+                                llm_retry_attempts=3, llm_retry_base_delay=0.0,
+                                llm_retry_max_delay=0.0)
+    base.update(kwargs)
+    return Settings(**base)
+
+
+async def test_un_503_se_reintenta_y_puede_salir_bien(monkeypatch):
+    ok = _RespuestaHTTP(200, {"stop_reason": "end_turn",
+                              "content": [{"type": "text", "text": "process \"x\" {}"}]})
+    cliente = _proveedor_responde(monkeypatch, [_RespuestaHTTP(503, text="upstream caido"), ok])
+
+    texto = await providers.AnthropicProvider(_settings_llm()).generate("dale")
+
+    assert texto == "process \"x\" {}"
+    assert cliente.llamadas == 2  # reintentó una vez
+
+
+async def test_un_400_falla_al_primer_intento(monkeypatch):
+    """Lo permanente no gasta la ventana de reintentos: reintentar no lo va a arreglar."""
+    cliente = _proveedor_responde(monkeypatch, [_RespuestaHTTP(400, text="prompt invalido")])
+
+    with pytest.raises(providers.LLMRequestRejected):
+        await providers.AnthropicProvider(_settings_llm()).generate("dale")
+
+    assert cliente.llamadas == 1
+
+
+async def test_un_429_se_reintenta(monkeypatch):
+    """408 y 429 son transitorios pese a ser 4xx (mismo criterio que los adapters)."""
+    ok = _RespuestaHTTP(200, {"stop_reason": "end_turn",
+                              "content": [{"type": "text", "text": "ok"}]})
+    cliente = _proveedor_responde(
+        monkeypatch, [_RespuestaHTTP(429, text="slow down", headers={"retry-after": "0"}), ok])
+
+    assert await providers.AnthropicProvider(_settings_llm()).generate("dale") == "ok"
+    assert cliente.llamadas == 2
+
+
+async def test_transitorio_persistente_agota_intentos(monkeypatch):
+    cliente = _proveedor_responde(monkeypatch, [_RespuestaHTTP(503, text="caido")])
+
+    with pytest.raises(providers.LLMTransientError):
+        await providers.AnthropicProvider(_settings_llm()).generate("dale")
+
+    assert cliente.llamadas == 3  # llm_retry_attempts
+
+
+@pytest.mark.parametrize("status", [401, 403, 404])
+async def test_credencial_o_modelo_mal_es_config_nuestra(monkeypatch, status):
+    """No es culpa del pedido: es la instalación. Se distingue para no devolver 422."""
+    _proveedor_responde(monkeypatch, [_RespuestaHTTP(status, text="nope")])
+
+    with pytest.raises(LLMConfigurationError):
+        await providers.AnthropicProvider(_settings_llm()).generate("dale")
+
+
+# ------------------------------------------- respuestas que llegan con 200 y no sirven
+
+async def test_refusal_no_revienta_con_indexerror(monkeypatch):
+    """Un rechazo por políticas llega 200 y sin texto: antes era un IndexError opaco."""
+    _proveedor_responde(monkeypatch, [_RespuestaHTTP(200, {"stop_reason": "refusal",
+                                                          "content": []})])
+
+    with pytest.raises(providers.LLMRequestRejected) as exc:
+        await providers.AnthropicProvider(_settings_llm()).generate("dale")
+    # El tipo de excepción no alcanza: el guard genérico de "sin texto" también lo atraparía.
+    # Lo que se fija acá es que el mensaje diga *qué pasó* y qué puede hacer el analista.
+    assert "declinó" in str(exc.value)
+    assert "Reformulá" in str(exc.value)
+
+
+async def test_respuesta_truncada_no_se_guarda_como_borrador(monkeypatch):
+    """Cortada por max_tokens = no es un borrador, y el arreglo está en la config."""
+    _proveedor_responde(monkeypatch, [_RespuestaHTTP(200, {
+        "stop_reason": "max_tokens",
+        "content": [{"type": "text", "text": "process \"a_medio_"}]})])
+
+    with pytest.raises(LLMConfigurationError) as exc:
+        await providers.AnthropicProvider(_settings_llm()).generate("dale")
+    assert "LLM_MAX_TOKENS" in str(exc.value)
+
+
+async def test_openai_truncado_tambien_se_detecta(monkeypatch):
+    _proveedor_responde(monkeypatch, [_RespuestaHTTP(200, {
+        "choices": [{"finish_reason": "length", "message": {"content": "process \"a"}}]})])
+
+    with pytest.raises(LLMConfigurationError):
+        await providers.OpenAIProvider(_settings_llm(llm_provider="openai")).generate("dale")
+
+
+async def test_max_tokens_viaja_en_el_payload(monkeypatch):
+    """El techo dejó de estar hardcodeado, y OpenAI/Ollama antes no lo mandaban."""
+    capturado: dict[str, Any] = {}
+
+    class _Captura(_ClienteSecuencia):
+        async def post(self, url, headers=None, json=None):
+            capturado.update(json or {})
+            return await super().post(url, headers=headers, json=json)
+
+    import httpx
+
+    ok = _RespuestaHTTP(200, {"choices": [{"finish_reason": "stop",
+                                           "message": {"content": "ok"}}]})
+    monkeypatch.setattr(httpx, "AsyncClient", _Captura([ok]))
+
+    await providers.OpenAIProvider(
+        _settings_llm(llm_provider="openai", llm_max_tokens=1234)).generate("dale")
+
+    assert capturado["max_tokens"] == 1234
 
 
 # ------------------------------------------- validación del borrador contra el parser

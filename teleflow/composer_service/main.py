@@ -24,7 +24,12 @@ from teleflow.common.db import db_ping, dispose_db, get_session, init_db
 from teleflow.common.logging import setup_logging
 from teleflow.common.models import FlowDraft
 from teleflow.common.observability import setup_observability
-from teleflow.composer_service.providers import get_provider
+from teleflow.composer_service.providers import (
+    LLMConfigurationError,
+    LLMRequestRejected,
+    LLMTransientError,
+    get_provider,
+)
 
 log = setup_logging("composer-service")
 
@@ -61,11 +66,21 @@ async def compose(req: ComposeRequest,
     if req.base_source:
         prompt += ("\n\nVersión actual del flow (modificala según el pedido):\n"
                    + req.base_source)
+    # Tres finales distintos, tres códigos distintos: antes todo era 502, así que un prompt
+    # rechazado y un proveedor caído se veían igual desde el cliente.
     try:
         source = await provider.generate(prompt)
-    except Exception as exc:
-        log.error("llm_generation_failed", error=str(exc))
-        raise HTTPException(status_code=502, detail=f"Error del proveedor LLM: {exc}")
+    except LLMRequestRejected as exc:
+        log.warning("llm_request_rejected", provider=provider.name, error=str(exc))
+        raise HTTPException(status_code=422, detail=f"El proveedor rechazó el pedido: {exc}")
+    except LLMConfigurationError as exc:
+        # Nuestra instalación está mal (credencial, modelo, max_tokens): no es culpa de quien
+        # pidió el borrador, y reintentar no lo arregla.
+        log.error("llm_misconfigured", provider=provider.name, error=str(exc))
+        raise HTTPException(status_code=500, detail=f"Composer mal configurado: {exc}")
+    except LLMTransientError as exc:
+        log.error("llm_unavailable", provider=provider.name, error=str(exc))
+        raise HTTPException(status_code=502, detail=f"Proveedor LLM no disponible: {exc}")
 
     # limpiar fences de markdown si el modelo los agregó
     source = source.strip()
