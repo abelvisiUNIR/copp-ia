@@ -44,7 +44,11 @@ producto se instancia por organismo ([[2026-06-30-adr-005-aislamiento-instancia]
 `entity_events`). Es una tabla + un middleware + una migración.
 
 ## 2. `registry-service` no tiene un solo test
-**Estado:** abierto · **Prioridad:** alta
+**Estado:** ✅ **cerrado 2026-07-25** (`registry-cobertura`, `4c7ce34`) — 23 tests (17
+unitarios + 6 e2e contra Postgres real). Aparecieron **tres defectos**: un prerelease se
+ordenaba por encima de su release y se volvía `latest`, un prerelease que empataba también
+movía el pointer (por el `>=`), y la carrera entre el `SELECT` y el `INSERT` devolvía 500 en
+vez de 409. · **Prioridad original:** alta
 
 **Hecho.** `tests/` cubre adapters, api_keys, business_metrics, dag, engine_retry,
 error_handling, events, gateway_scopes, observability, openapi, parser, tooling y validator,
@@ -140,8 +144,7 @@ segundo no cambia nada.
   su versión narrativa. Verificar primero cuánto de esto ya cubre `status`.
 
 ## Orden propuesto
-1. ~~Auditoría persistida (1)~~ ✅ **hecha 2026-07-25**. Sigue **tests del registry (2)**: el
-   invariante "una versión desplegada no se sobreescribe" no lo prueba nada.
+1. ~~Auditoría persistida (1)~~ ✅ · ~~Tests del registry (2)~~ ✅ — ambos hechos 2026-07-25.
 2. **Antes de tener tráfico real** (se abaratan mucho decidiéndolos temprano): idempotencia de
    `/execute` (4) y el ADR de estado compartido del gateway (3).
 3. **Antes de Fase E:** backup/restore (6), la red de seguridad de `review-ui` (5) y el
@@ -152,6 +155,10 @@ segundo no cambia nada.
   hace que cualquier test que toque la base pague ~4 s en conexiones fallidas antes de darse
   cuenta. Descubierto al implementar la auditoría; resuelto ahí con un sink en memoria, pero el
   próximo que escriba un test con DB se lo va a encontrar de nuevo.
+- **La API del registry no valida que `version` sea semver.** `banana` se registra y queda al
+  fondo del orden (hay un test que lo fija). Rechazarlo es un cambio de contrato que rompería
+  instalaciones con versiones libres, así que se documenta en vez de cortarlo — pero si alguna
+  vez se decide validar, es acá.
 - **`audit_log.details` es un footgun.** Hoy solo el deploy lo usa (versión + checksum). Nada
   impide que mañana alguien meta ahí un dato personal, justo en la tabla que más se conserva y
   más gente puede leer. Vale una lista blanca de claves si el uso crece.

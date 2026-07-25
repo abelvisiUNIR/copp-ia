@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from teleflow.common.config import get_settings
@@ -49,12 +50,25 @@ class FlowOut(BaseModel):
     created_at: datetime | None = None
 
 
-def _semver_key(version: str) -> tuple[int, ...]:
-    parts = []
-    for chunk in version.split("."):
-        digits = "".join(ch for ch in chunk if ch.isdigit())
-        parts.append(int(digits) if digits else 0)
-    return tuple(parts)
+def _semver_key(version: str) -> tuple[tuple[int, ...], int, str]:
+    """Orden de versiones. Un **prerelease va antes** que su release, no después.
+
+    La versión anterior quitaba los no-dígitos de cada chunk, así que `1.0.0-rc1` daba
+    `(1, 0, 1)` — **mayor** que `1.0.0`— y `1.0.0-beta` daba `(1, 0, 0)`, que con el `>=` de
+    `register_flow` también avanzaba el pointer. En los dos casos `latest` terminaba
+    apuntando a un candidato, y el executor disparaba procesos con él.
+
+    Devuelve `(números, 1 si es release / 0 si es prerelease, etiqueta)`. La etiqueta ordena
+    entre prereleases del mismo release (`alpha` < `beta` < `rc`, por orden alfabético, que es
+    lo que manda semver para identificadores no numéricos).
+    """
+    nucleo, _, prerelease = version.partition("-")
+    numeros = []
+    for chunk in nucleo.split("."):
+        digitos = "".join(ch for ch in chunk if ch.isdigit())
+        numeros.append(int(digitos) if digitos else 0)
+    # 1 = release, 0 = prerelease: a igualdad de números, el release gana.
+    return (tuple(numeros), 0 if prerelease else 1, prerelease)
 
 
 @app.post("/flows/{name}", response_model=FlowOut, status_code=201)
@@ -85,10 +99,23 @@ async def register_flow(
     latest = await session.get(FlowLatest, name)
     if latest is None:
         session.add(FlowLatest(name=name, version=req.version))
-    elif _semver_key(req.version) >= _semver_key(latest.version):
+    elif _semver_key(req.version) > _semver_key(latest.version):
+        # `>` y no `>=`: a igualdad de orden, el pointer se queda donde está. Con `>=`, un
+        # `1.0.0-beta` registrado después de `1.0.0` movía `latest` a la beta.
         latest.version = req.version
 
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        # El chequeo de arriba lee antes de insertar: entre el SELECT y el INSERT hay una
+        # ventana donde dos registros concurrentes de la misma versión pasan los dos. La
+        # garantía la sostiene el UniqueConstraint(name, version) — como debe ser — pero sin
+        # esto el segundo cliente recibía un 500 donde el caso secuencial da 409.
+        await session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"La versión {req.version} de '{name}' ya existe y es inmutable",
+        )
     log.info("flow_registered", flow_name=name, version=req.version)
     return FlowOut(
         flow_id=str(definition.id), name=name, version=req.version, status="registered"
