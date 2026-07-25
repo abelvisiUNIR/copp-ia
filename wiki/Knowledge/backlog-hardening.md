@@ -21,7 +21,10 @@ estimado**. Lo que es proyección y no lectura de código va marcado `(inferenci
 ---
 
 ## 1. No hay auditoría persistida — solo logs
-**Estado:** abierto · **Prioridad:** alta
+**Estado:** ✅ **cerrado 2026-07-25** ([[auditoria-persistida]], `982f12b` + `072070a`) —
+tabla `audit_log` append-only (migración `0004`), escritura enganchada en `auth.require` para
+que ninguna ruta quede afuera, y `GET /audit` con scope propio `audit:read`. Ver
+[[2026-07-25-auditoria-persistida]]. · **Prioridad original:** alta
 
 **Hecho.** `teleflow/common/models.py` define 11 tablas y **ninguna es de auditoría**:
 `flow_definitions`, `flow_latest`, `process_instances`, `instance_transitions`,
@@ -137,12 +140,21 @@ segundo no cambia nada.
   su versión narrativa. Verificar primero cuánto de esto ya cubre `status`.
 
 ## Orden propuesto
-1. **Con el composer** (mismo tema de fondo: que el sistema no mienta sobre lo que hizo):
-   auditoría persistida (1) y tests del registry (2).
+1. ~~Auditoría persistida (1)~~ ✅ **hecha 2026-07-25**. Sigue **tests del registry (2)**: el
+   invariante "una versión desplegada no se sobreescribe" no lo prueba nada.
 2. **Antes de tener tráfico real** (se abaratan mucho decidiéndolos temprano): idempotencia de
    `/execute` (4) y el ADR de estado compartido del gateway (3).
 3. **Antes de Fase E:** backup/restore (6), la red de seguridad de `review-ui` (5) y el
    lockfile del front (7).
+
+## Hallazgos laterales, todavía abiertos
+- **Postgres no se publica al host** en `docker-compose.yml`. No es un bug —es más seguro— pero
+  hace que cualquier test que toque la base pague ~4 s en conexiones fallidas antes de darse
+  cuenta. Descubierto al implementar la auditoría; resuelto ahí con un sink en memoria, pero el
+  próximo que escriba un test con DB se lo va a encontrar de nuevo.
+- **`audit_log.details` es un footgun.** Hoy solo el deploy lo usa (versión + checksum). Nada
+  impide que mañana alguien meta ahí un dato personal, justo en la tabla que más se conserva y
+  más gente puede leer. Vale una lista blanca de claves si el uso crece.
 
 ## Sources
 `teleflow/common/models.py` · `teleflow/gateway/main.py:92,252,405-408` ·
