@@ -109,6 +109,22 @@ en HA y runbooks.
 arreglo posible**. Un `pg_dump` + restore verificado por un test vale hoy más que los Helm
 charts, y no depende de tener k8s.
 
+## 7. `review-ui` se buildea sin lockfile — el bundle no es reproducible
+**Estado:** abierto · **Prioridad:** media-baja
+
+**Hecho.** `review-ui/package.json` declara rangos flotantes (`react: ^18.3.1`,
+`vite: ^5.3.1`) y **no hay `package-lock.json` versionado**. El `Dockerfile` hace
+`COPY package.json ./` + `RUN npm install`, así que ni siquiera usaría un lockfile si
+existiera: cada build resuelve versiones de nuevo.
+
+**Por qué importa.** `(inferencia)` dos builds de la misma commit en fechas distintas pueden
+producir bundles distintos. Para un producto que se instala por organismo, "el front que
+tiene el cliente" no es una función de la commit.
+
+**Costo.** Bajo, y son dos mitades que van juntas: versionar el lockfile **y** cambiar el
+`Dockerfile` a `COPY package.json package-lock.json ./` + `npm ci`. Versionar el lock sin lo
+segundo no cambia nada.
+
 ---
 
 ## Ideas de producto (no son deuda)
@@ -125,7 +141,8 @@ charts, y no depende de tener k8s.
    auditoría persistida (1) y tests del registry (2).
 2. **Antes de tener tráfico real** (se abaratan mucho decidiéndolos temprano): idempotencia de
    `/execute` (4) y el ADR de estado compartido del gateway (3).
-3. **Antes de Fase E:** backup/restore (6) y la red de seguridad de `review-ui` (5).
+3. **Antes de Fase E:** backup/restore (6), la red de seguridad de `review-ui` (5) y el
+   lockfile del front (7).
 
 ## Sources
 `teleflow/common/models.py` · `teleflow/gateway/main.py:92,252,405-408` ·
