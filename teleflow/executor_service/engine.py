@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import random
 import uuid
 from typing import Any
 
@@ -27,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from teleflow.common.config import Settings
 from teleflow.common.logging import get_logger
 from teleflow.common.models import InstanceTransition, ProcessInstance, SignalRecord
+from teleflow.common.retry import full_jitter_delay
 from teleflow.dsl.ast_nodes import ProcessDef, Ref, StageDef, StepDef
 from teleflow.dsl.evaluator import evaluate
 from teleflow.executor_service import adapters
@@ -352,9 +352,8 @@ class ExecutionEngine:
 
     def _retry_delay(self, attempt: int) -> float:
         """Backoff exponencial con full jitter: evita que N steps reintenten al unísono."""
-        ceiling = min(self._settings.step_retry_base_delay * float(2 ** attempt),
-                      self._settings.step_retry_max_delay)
-        return random.uniform(0, ceiling)
+        return full_jitter_delay(attempt, self._settings.step_retry_base_delay,
+                                 self._settings.step_retry_max_delay)
 
     async def _apply_step_actions(self, step: StepDef, ctx: dict[str, Any]) -> None:
         await self._apply_actions(step.name, step.on_complete, ctx)

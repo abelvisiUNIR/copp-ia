@@ -103,7 +103,13 @@ Combinado y en este orden de madurez:
   contrato a `docs/openapi.json` importando la app, sin stack levantado. README con la tabla
   de discrepancias doc-vs-código. **Colección `.http`: pendiente**, no se hizo.
 - **UI operativa mínima (opcional):** panel de instancias/entities/360/signals (hoy solo API).
-- **Composer:** LLM real (hoy `stub`), hardening del prompt, tests de composición; templates TMForum.
+- [x] **Composer (hecho 2026-07-25 → `composer-llm-hardening`):** el ítem estaba mal descrito
+  —los proveedores reales ya existían (`providers.py`), lo que faltaba era que el servicio no
+  mintiera—. Sin credencial ya no cae al `stub` en silencio (el servicio no arranca); el
+  borrador se valida contra el `parser-service` al componer y se guarda marcado (`validation`,
+  alembic `0003`), y la `review-ui` lo muestra antes de aprobar; los errores del proveedor se
+  clasifican en transitorio/permanente reusando `common/retry.py`. De 0 a 34 tests.
+  **Pendiente:** hardening del prompt y templates TMForum.
 - **Doc:** generación semi-automática desde código para frenar el drift.
 
 ### Fase E — Producción (cuando el producto esté estable y de calidad)
@@ -125,6 +131,12 @@ Combinado y en este orden de madurez:
 ## Orden recomendado y dependencias
 `A (transversal)` → **`B` (CI primero)** → `C` (calidad) → `D` (mejoras selectivas) → `E` (producción).
 **Regla:** no pasar a Producción (E) sin C + D estables. D siempre después de tener CI (B).
+
+## Backlog transversal
+Los huecos que no caen limpio en una fase (auditoría persistida, `registry-service` sin tests,
+rate limit por proceso, `/execute` sin idempotencia, `review-ui` sin red de seguridad,
+backup/restore) están en [[backlog-hardening]], con evidencia y prioridad. Esa página se
+mantiene aparte para no distorsionar la estructura de fases del arquitecto.
 
 ## Cómo lo trackeamos
 - Cada Fase = uno o más **work-streams**, cada uno con su rama.
