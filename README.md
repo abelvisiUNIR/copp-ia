@@ -94,7 +94,7 @@ tflow compose alta_socio --description "Proceso de alta de socio con validación
 tflow approve <draft_id> --version 1.0.0
 ```
 
-El proveedor LLM se configura por instancia: `LLM_PROVIDER=anthropic|openai|ollama|stub` (ADR-003). Sin API key configurada se usa el modo `stub` (esqueleto editable).
+El proveedor LLM se configura por instancia: `LLM_PROVIDER=anthropic|openai|ollama|stub` (ADR-003). El default es `stub`, que genera un esqueleto editable a mano y permite recorrer el ciclo compose → review → deploy sin credenciales. **Un proveedor real sin `LLM_API_KEY` hace que `composer-service` no arranque**: la alternativa —caer al `stub`— entregaba un esqueleto que parecía generado por el modelo.
 
 ## El lenguaje TeleFlow DSL v2
 

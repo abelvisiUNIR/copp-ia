@@ -30,7 +30,13 @@ log = setup_logging("composer-service")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    init_db(get_settings())
+    settings = get_settings()
+    # Se construye acá a propósito: si `LLM_PROVIDER` no se puede satisfacer, el servicio no
+    # arranca. Descubrirlo por request significa descubrirlo cuando alguien ya escribió el
+    # pedido, y antes significaba no descubrirlo nunca (caía al stub en silencio).
+    provider = get_provider(settings)
+    log.info("llm_provider_ready", provider=provider.name)
+    init_db(settings)
     yield
     await dispose_db()
 
@@ -70,9 +76,10 @@ async def compose(req: ComposeRequest,
                       source=source, base_source=req.base_source)
     session.add(draft)
     await session.commit()
+    # `provider.name` (lo que corrió), no `settings.llm_provider` (lo que se pidió).
     log.info("draft_created", flow_name=req.name, draft_id=str(draft.id),
-             provider=settings.llm_provider)
-    return _draft_out(draft)
+             provider=provider.name)
+    return {**_draft_out(draft), "provider": provider.name}
 
 
 @app.get("/drafts")

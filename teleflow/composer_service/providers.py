@@ -39,12 +39,26 @@ signals ["approve","reject"]. notification lleva channel: "email" y template.
 Respondé SOLO con el contenido del archivo .tflow, sin explicaciones ni markdown.'''
 
 
+class LLMConfigurationError(RuntimeError):
+    """El proveedor pedido no se puede construir con la configuración actual.
+
+    Se levanta al arrancar el servicio (no al componer): un `.env` mal configurado es un
+    error de despliegue y tiene que aparecer en el despliegue.
+    """
+
+
 class LLMProvider(ABC):
+    #: Nombre del proveedor que realmente corrió. Es lo que va al log y a la respuesta —
+    #: `settings.llm_provider` dice lo que se *pidió*, que no siempre es lo mismo.
+    name: str
+
     @abstractmethod
     async def generate(self, prompt: str) -> str: ...
 
 
 class AnthropicProvider(LLMProvider):
+    name = "anthropic"
+
     def __init__(self, settings: Settings):
         self._api_key = settings.llm_api_key
         self._model = settings.llm_model or "claude-fable-5"
@@ -71,6 +85,8 @@ class AnthropicProvider(LLMProvider):
 
 
 class OpenAIProvider(LLMProvider):
+    name = "openai"
+
     def __init__(self, settings: Settings):
         self._api_key = settings.llm_api_key
         self._model = settings.llm_model or "gpt-4o"
@@ -97,6 +113,8 @@ class OpenAIProvider(LLMProvider):
 class OllamaProvider(LLMProvider):
     """Modelo self-hosted (p.ej. requisito regulatorio de datos en territorio)."""
 
+    name = "ollama"
+
     def __init__(self, settings: Settings):
         self._model = settings.llm_model or "llama3.1"
         self._base_url = settings.llm_base_url or "http://ollama:11434"
@@ -122,8 +140,12 @@ class OllamaProvider(LLMProvider):
 class StubProvider(LLMProvider):
     """Sin LLM configurado: genera un esqueleto comentado para editar a mano.
 
-    Permite probar el ciclo compose → review → deploy sin credenciales.
+    Permite probar el ciclo compose → review → deploy sin credenciales. Se usa **solo** con
+    `LLM_PROVIDER=stub`: nunca es el resultado de que otro proveedor no se haya podido
+    construir (ver `get_provider`).
     """
+
+    name = "stub"
 
     async def generate(self, prompt: str) -> str:
         commented = "\n".join(f"// {line}" for line in prompt.strip().splitlines())
@@ -151,14 +173,40 @@ step "paso_inicial" {{
 '''
 
 
+#: Proveedores que no pueden funcionar sin credencial. `ollama` es self-hosted y `stub` no
+#: llama a nadie, así que ninguno de los dos está acá.
+_NEEDS_API_KEY = ("anthropic", "openai")
+
+_VALID_PROVIDERS = ("anthropic", "openai", "ollama", "stub")
+
+
 def get_provider(settings: Settings) -> LLMProvider:
-    provider = settings.llm_provider.lower()
-    if provider == "anthropic" and settings.llm_api_key:
+    """Construye el proveedor pedido, o levanta `LLMConfigurationError`.
+
+    **Nunca cae al `stub` en silencio.** Antes, un `LLM_PROVIDER` real sin credencial
+    devolvía el stub con un `warning`: el analista recibía un esqueleto con `TODO:` creyendo
+    que lo había generado el modelo, y el log registraba el proveedor *pedido*, así que la
+    única traza del incidente decía lo contrario de lo que pasó. Un proveedor mal configurado
+    es un error de despliegue: se levanta acá y el servicio no arranca.
+    """
+    provider = settings.llm_provider.lower().strip()
+
+    if provider not in _VALID_PROVIDERS:
+        raise LLMConfigurationError(
+            f"LLM_PROVIDER={settings.llm_provider!r} no es un proveedor conocido. "
+            f"Válidos: {', '.join(_VALID_PROVIDERS)}."
+        )
+    if provider in _NEEDS_API_KEY and not settings.llm_api_key:
+        raise LLMConfigurationError(
+            f"LLM_PROVIDER={provider} requiere LLM_API_KEY y está vacía. "
+            f"Configurá la credencial, o poné LLM_PROVIDER=stub para trabajar sin LLM "
+            f"(genera esqueletos para editar a mano, no borradores reales)."
+        )
+
+    if provider == "anthropic":
         return AnthropicProvider(settings)
-    if provider == "openai" and settings.llm_api_key:
+    if provider == "openai":
         return OpenAIProvider(settings)
     if provider == "ollama":
         return OllamaProvider(settings)
-    if provider in ("anthropic", "openai"):
-        log.warning("llm_api_key_missing_using_stub", provider=provider)
     return StubProvider()
