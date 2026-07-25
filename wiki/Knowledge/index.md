@@ -37,6 +37,9 @@ la promoción de uno a otro es deliberada, nunca automática).
 - [[2026-07-24-metricas-de-negocio-gauges]] — (wiki/observabilidad) el estado actual
   (backlog de human_tasks, procesos vivos) va en gauges agregados por SQL desde
   `process_instances`; los counters miden eventos y no responden sobre el presente.
+- [[2026-07-25-auditoria-persistida]] — (wiki/gateway, **proposed**) se audita toda escritura
+  y todo intento denegado, sin guardar el cuerpo; el registro se engancha en `auth.require`
+  para que ninguna ruta nueva quede afuera.
 - [[2026-07-25-composer-llm-fallos-explicitos]] — (wiki/composer) sin proveedor real
   configurado el servicio no arranca (nunca cae al `stub` en silencio); el borrador se valida
   contra el parser al componer y se guarda marcado; los errores del LLM se clasifican.
