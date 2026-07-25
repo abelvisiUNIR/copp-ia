@@ -37,6 +37,9 @@ la promoción de uno a otro es deliberada, nunca automática).
 - [[2026-07-24-metricas-de-negocio-gauges]] — (wiki/observabilidad) el estado actual
   (backlog de human_tasks, procesos vivos) va en gauges agregados por SQL desde
   `process_instances`; los counters miden eventos y no responden sobre el presente.
+- [[2026-07-25-estado-compartido-gateway]] — (wiki/gateway, **proposed**) el rate limit y el
+  cache de keys pasan a Redis: el chart ya declara `replicas: 2` y el código asume un solo
+  proceso.
 - [[2026-07-25-auditoria-persistida]] — (wiki/gateway, **proposed**) se audita toda escritura
   y todo intento denegado, sin guardar el cuerpo; el registro se engancha en `auth.require`
   para que ninguna ruta nueva quede afuera.

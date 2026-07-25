@@ -158,6 +158,22 @@ tflow openapi --output otro/lado.json
 
 Sale del código (importa la app), así que **no hace falta el stack levantado**. Cada ruta declara `operation_id` y `tags` explícitos, para que un cliente generado tenga nombres estables: si se renombra la función Python, el método del cliente no cambia.
 
+### Rate limit compartido entre réplicas
+
+El límite (`RATE_LIMIT_RPM`, 120 por defecto) se cuenta **en Redis**, no en cada proceso: con `replicas: 2` el límite efectivo era el doble del configurado, porque cada réplica llevaba su propio contador. Ventana fija por minuto y por key, con la key **hasheada** (Redis no es lugar para una credencial, ni en el nombre de una clave); las entradas expiran solas.
+
+**Si Redis no responde, el gateway degrada al contador en memoria** —lo de antes: limita por proceso— y lo cuenta en `teleflow_rate_limit_degraded_total`. Esa es la métrica a alertar: mientras suba, el límite vuelve a ser N× con N réplicas.
+
+Costo medido: **+0,6 ms** sobre un request de ~7 ms (300 muestras por lado), dentro de la variación entre corridas.
+
+### Revocación de credenciales con varias réplicas
+
+Revocar o rotar una key la corta **en el acto y en todas las réplicas del gateway**, sin esperar el TTL del cache (`API_KEY_CACHE_TTL`, 30 s por defecto). El `DELETE` solo pasa por una réplica; las demás se enteran por un anuncio en Redis (canal `teleflow:keys:revocadas`) y purgan su cache local.
+
+**Sin Redis el gateway funciona igual**, degradado: la purga local sigue andando y el TTL vuelve a ser el techo. Esa degradación no es silenciosa — se cuenta en `teleflow_key_revocations_unpublished_total`, que es la métrica a alertar: mientras suba, una credencial revocada puede seguir entrando hasta 30 s por réplica.
+
+El chart declara `replicas: 2` para el gateway (`helm/teleflow/values.yaml`), así que esto **no es hipotético**.
+
 ### Auditoría
 
 Toda acción de **escritura** y **todo intento denegado** (401/403/429, incluso de lectura) queda registrado en la tabla `audit_log`: quién, qué, sobre qué, cuándo y con qué resultado. Las lecturas exitosas no se registran, salvo la lectura de la auditoría misma.

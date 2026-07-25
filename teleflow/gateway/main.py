@@ -6,6 +6,7 @@ routing hacia los servicios core. Los clientes solo conocen este endpoint.
 Deploy de un flow: POST /flows/{name}
   gateway → parser-service (valida) → registry-service (persiste)
 """
+import asyncio
 import secrets
 import time
 import uuid
@@ -16,6 +17,7 @@ from functools import lru_cache
 from typing import Any
 
 import httpx
+import redis.asyncio as aioredis
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
@@ -38,13 +40,33 @@ PUBLIC_PATHS = {"/health", "/ready", "/metrics", "/docs", "/openapi.json", "/red
 
 client: httpx.AsyncClient | None = None
 
+#: Estado de proceso del gateway (conexión Redis y tarea del listener).
+state: dict[str, Any] = {}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global client
+    settings = get_settings()
     client = httpx.AsyncClient(timeout=60.0)
-    init_db(get_settings())   # las API keys viven en Postgres (tabla api_keys)
+    init_db(settings)   # las API keys viven en Postgres (tabla api_keys)
+
+    # Redis solo para invalidar el cache de keys entre réplicas. Si no está, el gateway
+    # funciona igual: la purga local sigue andando y el TTL sigue siendo el techo.
+    try:
+        state["redis"] = aioredis.from_url(settings.redis_url, decode_responses=True)
+        state["listener"] = asyncio.create_task(_escuchar_revocaciones())
+    except Exception as exc:
+        log.warning("redis_unavailable_at_startup", error=str(exc))
+
     yield
+
+    listener = state.get("listener")
+    if listener is not None:
+        listener.cancel()
+    redis = state.get("redis")
+    if redis is not None:
+        await redis.aclose()
     await client.aclose()
 
 
@@ -78,7 +100,46 @@ class TokenBucket:
         return False
 
 
+#: Buckets por proceso. Dejaron de ser el mecanismo principal —ahora el contador vive en
+#: Redis y lo comparten todas las réplicas— pero se conservan como red de seguridad para
+#: cuando Redis no está: limitar por proceso protege menos que limitar de verdad, y muchísimo
+#: más que no limitar.
 _buckets: dict[str, TokenBucket] = {}
+
+RATE_LIMIT_DEGRADADO = Counter(
+    "teleflow_rate_limit_degraded_total",
+    "Requests limitados por proceso porque Redis no respondió",
+)
+
+
+async def permite_el_limite(api_key: str, settings: Settings) -> bool:
+    """Ventana fija por minuto, compartida entre réplicas.
+
+    `INCR` + `EXPIRE` y no token bucket: el bucket necesita leer-modificar-escribir con estado
+    propio, que en Redis pide script Lua o transacción. La ventana fija son dos comandos y
+    ningún estado que mantener; a 120 rpm el suavizado en los bordes no cambia nada práctico.
+
+    La key va **hasheada**: Redis no es lugar para una credencial, ni siquiera como parte del
+    nombre de una clave.
+    """
+    redis = state.get("redis")
+    if redis is not None:
+        ventana = int(time.time() // 60)
+        clave = f"ratelimit:{auth.hash_key(api_key)}:{ventana}"
+        try:
+            usados = await redis.incr(clave)
+            if usados == 1:
+                # Dos ventanas de vida: la clave se limpia sola y sobrevive al borde.
+                await redis.expire(clave, 120)
+            return bool(usados <= settings.rate_limit_rpm)
+        except Exception as exc:
+            # Un limitador caído no puede convertirse en una caída del producto. Se degrada al
+            # bucket del proceso —lo que había antes— y **se cuenta**: si nadie mira este
+            # contador, el límite vuelve a ser N× con N réplicas sin que se entere nadie.
+            RATE_LIMIT_DEGRADADO.inc()
+            log.error("rate_limit_redis_failed", error=str(exc))
+
+    return _buckets.setdefault(api_key, TokenBucket(settings.rate_limit_rpm)).allow()
 
 
 @app.middleware("http")
@@ -94,8 +155,7 @@ async def auth_and_rate_limit(request: Request, call_next):  # type: ignore[no-u
     if identidad is None:
         return JSONResponse(status_code=401, content={"detail": "API key inválida"})
 
-    bucket = _buckets.setdefault(api_key, TokenBucket(settings.rate_limit_rpm))
-    if not bucket.allow():
+    if not await permite_el_limite(api_key, settings):
         return JSONResponse(status_code=429,
                             content={"detail": "Rate limit excedido"})
 
@@ -193,19 +253,86 @@ async def _registrar_auditoria(request: Request, status_code: int, scope: str) -
 # hash de la key -> (identidad, vence_en). Evita ir a la DB en cada request.
 _cache_keys: dict[str, tuple[auth.Identidad, float]] = {}
 
+#: Canal donde se anuncian las keys revocadas. Cada réplica del gateway escucha y purga la
+#: suya: sin esto, revocar solo cortaba en el proceso que atendió el `DELETE`, y las demás
+#: seguían aceptando la credencial hasta que venciera su propio TTL.
+CANAL_REVOCACIONES = "teleflow:keys:revocadas"
+
+REVOCACIONES_RECIBIDAS = Counter(
+    "teleflow_key_revocations_received_total",
+    "Revocaciones de key recibidas por pub/sub desde otra réplica",
+)
+REVOCACIONES_NO_PUBLICADAS = Counter(
+    "teleflow_key_revocations_unpublished_total",
+    "Revocaciones que no se pudieron anunciar al resto de las réplicas",
+)
+
 
 def purgar_cache(key_hash: str) -> None:
-    """Saca una key del cache **ya**, sin esperar el TTL.
+    """Saca una key del cache de **este** proceso, sin esperar el TTL.
 
-    Sin esto, una key revocada seguiría entrando hasta `api_key_cache_ttl` segundos — que es
-    justo lo que no se quiere de una credencial filtrada.
-
-    Límite conocido: purga el cache **de este proceso**. Con varias réplicas del gateway, las
-    demás siguen aceptando la key hasta que su propio TTL venza (≤ `api_key_cache_ttl`). Para
-    revocación inmediata cross-réplica haría falta invalidación por Redis pub/sub (el executor
-    ya usa ese patrón para las señales).
+    Es la mitad local de la revocación: el anuncio a las demás réplicas lo hace
+    `anunciar_revocacion`.
     """
     _cache_keys.pop(key_hash, None)
+
+
+async def anunciar_revocacion(key_hash: str) -> None:
+    """Purga local + anuncio al resto de las réplicas.
+
+    El `DELETE /keys/{id}` solo pasa por **una** réplica; las demás se enteran por acá. El TTL
+    de `api_key_cache_ttl` queda como red de seguridad si el mensaje se pierde, no como el
+    mecanismo principal: para una credencial filtrada, esos segundos son justo lo que la
+    revocación existe para evitar.
+    """
+    purgar_cache(key_hash)
+    redis = state.get("redis")
+    if redis is None:
+        return  # sin Redis configurado: queda la purga local y el TTL
+    try:
+        await redis.publish(CANAL_REVOCACIONES, key_hash)
+    except Exception as exc:
+        # No se rompe la revocación por esto: local ya quedó purgada y las otras réplicas
+        # tienen el TTL. Pero que el anuncio falle **no puede ser invisible**: la ventana
+        # vuelve a ser de `api_key_cache_ttl` segundos sin que nadie lo sepa.
+        REVOCACIONES_NO_PUBLICADAS.inc()
+        log.error("key_revocation_publish_failed", error=str(exc))
+
+
+async def _escuchar_revocaciones() -> None:
+    """Suscripción con reconexión: el listener nunca muere (mismo patrón que el executor)."""
+    import redis.exceptions as redis_exc
+
+    while True:
+        try:
+            redis = state.get("redis")
+            if redis is None:
+                return
+            pubsub = redis.pubsub()
+            await pubsub.subscribe(CANAL_REVOCACIONES)
+            log.info("key_revocation_listener_started", channel=CANAL_REVOCACIONES)
+            try:
+                while True:
+                    try:
+                        mensaje = await pubsub.get_message(
+                            ignore_subscribe_messages=True, timeout=5.0)
+                    except (TimeoutError, redis_exc.TimeoutError):
+                        continue  # timeout periódico: la suscripción sigue viva
+                    if mensaje is None or mensaje.get("type") != "message":
+                        continue
+                    key_hash = mensaje["data"]
+                    if isinstance(key_hash, bytes):
+                        key_hash = key_hash.decode("utf-8")
+                    purgar_cache(str(key_hash))
+                    REVOCACIONES_RECIBIDAS.inc()
+                    log.info("key_revocation_applied")
+            finally:
+                await pubsub.aclose()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            log.error("key_revocation_listener_crashed_restarting", error=repr(exc))
+            await asyncio.sleep(3)
 
 
 @lru_cache
@@ -406,7 +533,7 @@ async def revocar_key(key_id: uuid.UUID) -> Response:
         key_hash, name = fila.key_hash, fila.name
         await session.commit()
 
-    purgar_cache(key_hash)
+    await anunciar_revocacion(key_hash)
     log.info("api_key_revoked", key_name=name, key_id=str(key_id))
     return JSONResponse(content={"id": str(key_id), "name": name, "active": False})
 
@@ -433,7 +560,8 @@ async def rotar_key(key_id: uuid.UUID) -> Response:
         name, scopes = fila.name, [str(s) for s in fila.scopes]
         await session.commit()
 
-    purgar_cache(hash_viejo)   # el secreto viejo deja de entrar en el acto
+    # El secreto viejo deja de entrar en el acto, y en **todas** las réplicas.
+    await anunciar_revocacion(hash_viejo)
     log.info("api_key_rotated", key_name=name, key_id=str(key_id))
     return JSONResponse(content={
         "id": str(key_id),
