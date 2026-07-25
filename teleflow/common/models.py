@@ -163,6 +163,13 @@ class FlowDraft(Base):
     base_source: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
     comments: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    # Proveedor que **generó** este borrador (no el configurado al leerlo): un borrador del
+    # `stub` es un esqueleto para editar a mano, y quien lo revisa tiene que saberlo.
+    # Nullable por los borradores anteriores a la columna.
+    provider: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    # Resultado de pasar `source` por el parser al componer: {parses, issues, checked_at}.
+    # `parses: null` = no se pudo verificar (parser caído), que no es lo mismo que "compila".
+    validation: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

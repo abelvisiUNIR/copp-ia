@@ -10,6 +10,7 @@ Flujo PR-style:
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -72,14 +73,51 @@ async def compose(req: ComposeRequest,
         lines = source.splitlines()
         source = "\n".join(l for l in lines if not l.strip().startswith("```"))
 
+    # Se valida antes de guardar, pero **no** condiciona el guardado: un borrador que no
+    # compila suele estar a dos líneas de hacerlo, y la generación ya se pagó. Lo que no
+    # puede pasar es que llegue a un revisor humano sin que nadie sepa que no compila —
+    # antes eso se descubría recién en el deploy, después de la revisión.
+    validation = await _validate_source(source, req.name)
+
     draft = FlowDraft(name=req.name, description=req.description,
-                      source=source, base_source=req.base_source)
+                      source=source, base_source=req.base_source,
+                      provider=provider.name, validation=validation)
     session.add(draft)
     await session.commit()
     # `provider.name` (lo que corrió), no `settings.llm_provider` (lo que se pidió).
     log.info("draft_created", flow_name=req.name, draft_id=str(draft.id),
-             provider=provider.name)
-    return {**_draft_out(draft), "provider": provider.name}
+             provider=provider.name, parses=validation["parses"])
+    return _draft_out(draft)
+
+
+async def _validate_source(source: str, name: str) -> dict[str, Any]:
+    """Pasa el borrador por el `parser-service`. Nunca levanta por culpa del parser.
+
+    `parses: None` significa **no se pudo verificar**, y es un estado distinto de "compila".
+    Si el parser está caído, la generación no se bloquea, pero la degradación queda escrita
+    en el borrador: dar por bueno lo que no se verificó sería el mismo problema que este
+    cambio arregla, un nivel más abajo.
+    """
+    checked_at = datetime.now(timezone.utc).isoformat()
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{get_settings().parser_url}/parse",
+                json={"source": source, "name": name},
+            )
+        response.raise_for_status()
+        data = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        # Solo transporte y respuesta ilegible: un bug nuestro no puede disfrazarse de
+        # "parser caído", así que cualquier otra excepción sigue de largo.
+        log.error("draft_validation_unavailable", flow_name=name, error=str(exc))
+        return {"parses": None, "issues": [], "error": str(exc), "checked_at": checked_at}
+
+    return {
+        "parses": bool(data.get("valid")),
+        "issues": data.get("issues", []),
+        "checked_at": checked_at,
+    }
 
 
 @app.get("/drafts")
@@ -172,6 +210,10 @@ def _draft_out(draft: FlowDraft, include_source: bool = True) -> dict[str, Any]:
         "status": draft.status,
         "comments": draft.comments,
         "created_at": draft.created_at.isoformat() if draft.created_at else None,
+        # Van también en el listado (`include_source=False`): son justamente lo que decide
+        # si vale la pena abrir un borrador.
+        "provider": draft.provider,
+        "validation": draft.validation,
     }
     if include_source:
         out["source"] = draft.source

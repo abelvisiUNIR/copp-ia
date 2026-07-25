@@ -6,10 +6,13 @@ había generado el modelo, y el log registraba el proveedor *pedido*. Estos test
 el stub solo aparece cuando se lo pide explícitamente.
 """
 from pathlib import Path
+from typing import cast
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from teleflow.common.config import Settings
+from teleflow.composer_service.main import _validate_source
 from teleflow.composer_service.providers import (
     AnthropicProvider,
     LLMConfigurationError,
@@ -85,6 +88,130 @@ def test_proveedor_desconocido_levanta(typo):
     with pytest.raises(LLMConfigurationError) as exc:
         get_provider(_settings(typo, api_key="k"))
     assert "no es un proveedor conocido" in str(exc.value)
+
+
+# ------------------------------------------- validación del borrador contra el parser
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _FakeClient:
+    """Reemplaza a `httpx.AsyncClient`: devuelve un payload fijo o levanta."""
+
+    def __init__(self, resultado):
+        self._resultado = resultado
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, json=None):
+        if isinstance(self._resultado, Exception):
+            raise self._resultado
+        return _FakeResponse(self._resultado)
+
+
+def _parser_responde(monkeypatch, resultado):
+    """`resultado` es el payload que devuelve el parser, o la excepción que levanta."""
+    import httpx
+
+    # `main` hace `import httpx` y usa `httpx.AsyncClient`, así que alcanza con el módulo.
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient(resultado))
+
+
+async def test_borrador_que_compila_queda_marcado_ok(monkeypatch):
+    _parser_responde(monkeypatch, {"valid": True, "issues": []})
+    validation = await _validate_source("process \"x\" {}", "x")
+
+    assert validation["parses"] is True
+    assert validation["issues"] == []
+    assert validation["checked_at"]
+
+
+async def test_borrador_que_no_compila_se_marca_pero_no_levanta(monkeypatch):
+    """No se rechaza: la generación ya se pagó y suele estar a dos líneas de compilar."""
+    issues = [{"level": "error", "message": "falta '}'", "block": "syntax"}]
+    _parser_responde(monkeypatch, {"valid": False, "issues": issues})
+    validation = await _validate_source("process \"x\" {", "x")
+
+    assert validation["parses"] is False
+    assert validation["issues"] == issues
+
+
+async def test_parser_caido_no_se_confunde_con_compila(monkeypatch):
+    """`parses: None` es "no se pudo verificar", que no es lo mismo que "compila"."""
+    import httpx
+
+    _parser_responde(monkeypatch, httpx.ConnectError("parser caído"))
+    validation = await _validate_source("process \"x\" {}", "x")
+
+    assert validation["parses"] is None  # ni True ni False
+    assert "error" in validation
+
+
+async def test_un_bug_nuestro_no_se_disfraza_de_parser_caido(monkeypatch):
+    """Solo transporte y respuesta ilegible se absorben; el resto tiene que propagarse."""
+    _parser_responde(monkeypatch, RuntimeError("bug nuestro"))
+
+    with pytest.raises(RuntimeError):
+        await _validate_source("process \"x\" {}", "x")
+
+
+class _FakeSession:
+    """Lo mínimo que usa `compose`: acumular y confirmar."""
+
+    def __init__(self):
+        self.added = []
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    async def commit(self):
+        return None
+
+
+async def test_compose_guarda_el_borrador_marcado(monkeypatch):
+    """Que `_validate_source` funcione no sirve si `compose` no la llama.
+
+    Verifica el camino completo: el borrador que se persiste lleva el proveedor que lo
+    generó y el resultado del parser, y ambos viajan en la respuesta.
+    """
+    from teleflow.common.config import get_settings
+    from teleflow.composer_service.main import ComposeRequest, compose
+
+    monkeypatch.setenv("LLM_PROVIDER", "stub")
+    monkeypatch.setenv("LLM_API_KEY", "")
+    get_settings.cache_clear()
+    _parser_responde(monkeypatch, {"valid": False, "issues": [{"level": "error",
+                                                              "message": "falta '}'",
+                                                              "block": "syntax"}]})
+    session = _FakeSession()
+    try:
+        salida = await compose(
+            ComposeRequest(name="alta_socio", description="alta de socio"),
+            session=cast(AsyncSession, session),
+        )
+    finally:
+        get_settings.cache_clear()
+
+    draft = session.added[0]
+    assert draft.provider == "stub"
+    assert draft.validation["parses"] is False
+    assert salida["provider"] == "stub"
+    assert salida["validation"]["issues"][0]["message"] == "falta '}'"
 
 
 # ------------------------------------------- el cableado, no solo la función
