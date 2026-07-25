@@ -80,7 +80,9 @@ single-process por diseño hasta Fase E" o "el estado compartido va a Redis" —
 re-descubrirlo en la tercera feature.
 
 ## 4. `/execute` no tiene idempotencia
-**Estado:** abierto · **Prioridad:** media-alta
+**Estado:** ✅ **cerrado 2026-07-25** ([[idempotencia-execute]], `b6c7668`) — `Idempotency-Key`
+opcional, garantizada por un `UNIQUE` (migración `0005`), con 409 si la misma clave trae otro
+pedido. Ver [[2026-07-25-idempotencia-execute]]. · **Prioridad original:** media-alta
 
 **Hecho.** `gateway/main.py:405-408` es un proxy plano al executor, sin `Idempotency-Key` ni
 deduplicación.
@@ -145,8 +147,8 @@ segundo no cambia nada.
 
 ## Orden propuesto
 1. ~~Auditoría persistida (1)~~ ✅ · ~~Tests del registry (2)~~ ✅ — ambos hechos 2026-07-25.
-2. **Antes de tener tráfico real** (se abaratan mucho decidiéndolos temprano): idempotencia de
-   `/execute` (4) y el ADR de estado compartido del gateway (3).
+2. ~~Idempotencia de `/execute` (4)~~ ✅ **hecha 2026-07-25**. Queda el **ADR de estado
+   compartido del gateway (3)**, que sigue abaratándose por decidirlo temprano.
 3. **Antes de Fase E:** backup/restore (6), la red de seguridad de `review-ui` (5) y el
    lockfile del front (7).
 

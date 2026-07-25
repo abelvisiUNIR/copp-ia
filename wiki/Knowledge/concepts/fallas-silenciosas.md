@@ -1,7 +1,7 @@
 ---
 project: copp-ia
 type: concept
-provenance: copp-ia@devyos@4c7ce34
+provenance: copp-ia@devyos@b6c7668
 created: 2026-07-24
 updated: 2026-07-25
 tags: [concepto, calidad, resiliencia, observabilidad, patron]
@@ -9,9 +9,9 @@ tags: [concepto, calidad, resiliencia, observabilidad, patron]
 
 # Fallas silenciosas — el patrón que más veces apareció en este proyecto
 
-> Provenance: `copp-ia@devyos@4c7ce34`. Sintetizado de seis work-streams distintos
+> Provenance: `copp-ia@devyos@b6c7668`. Sintetizado de siete work-streams distintos
 > (`except-swallow-audit`, `limpieza-dx-openapi`, `observabilidad-negocio`,
-> `composer-llm-hardening`, `auditoria-persistida`, `registry-cobertura`) que encontraron el
+> `composer-llm-hardening`, `auditoria-persistida`, `registry-cobertura`, `idempotencia-execute`) que encontraron el
 > mismo problema con caras distintas.
 
 ## Qué es
@@ -33,6 +33,7 @@ meses en el repo antes de encontrarse, y ninguno se encontró por un test.
 | 4 | `composer_service/providers.py` | `LLM_PROVIDER=anthropic` = borradores generados por un modelo | Sin credencial, `get_provider` logueaba un `warning` y devolvía el `stub`: `/compose` respondía **201** y el analista recibía un esqueleto con `TODO:` creyendo que lo escribió el modelo. Peor, el log registraba el proveedor *pedido*, así que **la única traza decía lo contrario de lo que pasó**. Un typo en la variable caía al mismo lugar sin ni siquiera el warning | `fa479cb` (`composer-llm-hardening`) |
 | 5 | `composer_service/providers.py` | HTTP 200 = respuesta utilizable | Un rechazo por políticas del modelo llega con **200**, `stop_reason: refusal` y `content: []`; una respuesta cortada por límite de tokens llega con **200** y un `.tflow` a la mitad. La primera reventaba con un `IndexError` reportado como "error del proveedor"; la segunda se guardaba como borrador | `5d89f94` (`composer-llm-hardening`) |
 | 6 | `gateway/main.py` | un middleware que registra al final = registra siempre | El 500 lo arma un middleware de **Starlette** que envuelve a los de la app: una excepción no atrapada salta por encima del middleware propio, `call_next` propaga y el código que sigue nunca corre. Un deploy que crasheaba a mitad de camino no dejaba registro de auditoría — el intento más interesante de todos | `982f12b` (`auditoria-persistida`) |
+| 8 | `gateway/main.py` | mandar `Idempotency-Key` = estar protegido | El proxy arma los headers **desde cero** (correcto: evita colar headers del exterior a los servicios internos), así que el header estándar del cliente no llegaba al executor. El gateway respondía 202 y no había ninguna deduplicación: el cliente creía estar protegido de los reintentos y no lo estaba | `b6c7668` (`idempotencia-execute`) |
 | 7 | `registry_service/main.py` | `latest` apunta a la versión mayor | `_semver_key` quitaba los no-dígitos de cada chunk, así que el `1` de `rc1` se sumaba al patch: `1.0.0-rc1` → `(1,0,1)`, **mayor** que `1.0.0`. Registrar un candidato después del estable movía `latest` al candidato y el executor disparaba procesos de negocio con él. El 201 llegaba igual y el pointer apuntaba a algo que existía | `4c7ce34` (`registry-cobertura`) |
 
 ## La forma común
