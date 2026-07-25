@@ -113,7 +113,10 @@ gateway). Es la superficie donde un error tiene el mayor radio de daño y la ún
 seguridad.
 
 ## 6. Backup/restore probado — separarlo y adelantarlo de Fase E
-**Estado:** abierto · **Prioridad:** media (subir antes de producción)
+**Estado:** ✅ **cerrado 2026-07-25** ([[estado-durable]]) — `scripts/backup.sh` y
+`restore.sh` con el viaje de ida y vuelta probado por e2e, más el volumen y el `hostname`
+fijo de RabbitMQ (la DLQ se perdía con `up --build`). Ver [[2026-07-25-que-se-respalda]]. ·
+**Prioridad original:** media
 
 **Hecho.** `roadmap.md:113` lo lista dentro de Fase E, junto a Helm en k8s, HPA, StatefulSets
 en HA y runbooks.
@@ -154,9 +157,11 @@ segundo no cambia nada.
 1. ~~Auditoría persistida (1)~~ ✅ · ~~Tests del registry (2)~~ ✅ — ambos hechos 2026-07-25.
 2. ~~Idempotencia de `/execute` (4)~~ ✅ · ~~Estado compartido del gateway (3)~~ ✅ — ambos
    hechos 2026-07-25.
-3. ~~`review-ui` (5)~~ ✅ · ~~lockfile del front (7)~~ ✅ — hechos 2026-07-25. **Queda
-   backup/restore (6)**, el único abierto: es lo único de la lista de Fase E que, si falta el
-   día que se necesita, no tiene arreglo.
+3. ~~`review-ui` (5)~~ ✅ · ~~lockfile del front (7)~~ ✅ · ~~backup/restore (6)~~ ✅ — hechos
+   2026-07-25.
+
+**Los 7 ítems están cerrados.** Lo que siga sale del [[roadmap]] (Fase E) o de una revisión
+transversal nueva, no de esta lista.
 
 ## Hallazgos laterales, todavía abiertos
 - **Ni Postgres ni Redis se publican al host** en `docker-compose.yml`. No es un bug —es más
