@@ -63,7 +63,10 @@ cuando alguien ya pisó una versión en producción.
 `cli.py` queda anotado acá.)
 
 ## 3. El rate limit es por proceso — y es la segunda vez que aparece el mismo supuesto
-**Estado:** abierto · **Prioridad:** media (decisión), baja (implementación)
+**Estado:** ✅ **cerrado 2026-07-25** ([[estado-compartido-gateway]], `007e4a7` + el chunk del
+rate limit) — contador en Redis y revocación por pub/sub, las dos verificadas con **dos
+réplicas reales**. Ver [[2026-07-25-estado-compartido-gateway]]. · **Prioridad original:**
+media (decisión), baja (implementación)
 
 **Hecho.** `gateway/main.py:92` — `_buckets` es un dict en memoria del proceso. Con N réplicas
 del gateway el límite efectivo es N × `rate_limit_rpm`. Es **el mismo límite** ya anotado
@@ -147,16 +150,20 @@ segundo no cambia nada.
 
 ## Orden propuesto
 1. ~~Auditoría persistida (1)~~ ✅ · ~~Tests del registry (2)~~ ✅ — ambos hechos 2026-07-25.
-2. ~~Idempotencia de `/execute` (4)~~ ✅ **hecha 2026-07-25**. Queda el **ADR de estado
-   compartido del gateway (3)**, que sigue abaratándose por decidirlo temprano.
+2. ~~Idempotencia de `/execute` (4)~~ ✅ · ~~Estado compartido del gateway (3)~~ ✅ — ambos
+   hechos 2026-07-25.
 3. **Antes de Fase E:** backup/restore (6), la red de seguridad de `review-ui` (5) y el
    lockfile del front (7).
 
 ## Hallazgos laterales, todavía abiertos
-- **Postgres no se publica al host** en `docker-compose.yml`. No es un bug —es más seguro— pero
-  hace que cualquier test que toque la base pague ~4 s en conexiones fallidas antes de darse
-  cuenta. Descubierto al implementar la auditoría; resuelto ahí con un sink en memoria, pero el
-  próximo que escriba un test con DB se lo va a encontrar de nuevo.
+- **Ni Postgres ni Redis se publican al host** en `docker-compose.yml`. No es un bug —es más
+  seguro— pero hace que cualquier test que toque una de las dos pague **~2-4 s por intento de
+  conexión**. Mordió **dos veces el mismo día**: la suite se fue de 22 s a 73 s al agregar la
+  auditoría, y de 27 s a **137 s** al agregar Redis al gateway. Las dos veces se resolvió con
+  un doble inerte en `conftest.py` (`_SesionFalsa`, `_RedisInerte`).
+  **Regla que sale de acá:** al agregarle al gateway una dependencia de I/O, sumarla al fixture
+  `sink_auditoria` en el mismo commit — si no, la próxima persona pierde media hora buscando
+  por qué la suite se arrastra.
 - **La API del registry no valida que `version` sea semver.** `banana` se registra y queda al
   fondo del orden (hay un test que lo fija). Rechazarlo es un cambio de contrato que rompería
   instalaciones con versiones libres, así que se documenta en vez de cortarlo — pero si alguna

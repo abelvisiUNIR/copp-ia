@@ -1,7 +1,7 @@
 ---
 project: copp-ia
 date: 2026-07-25
-status: proposed
+status: accepted
 provenance: copp-ia@devyos@90c58bc
 tags: [adr, gateway, escalado, redis, seguridad]
 ---
@@ -10,12 +10,12 @@ tags: [adr, gateway, escalado, redis, seguridad]
 
 > Provenance: `copp-ia@devyos@90c58bc`. Decisión tomada durante el work-stream
 > [[estado-compartido-gateway]]. **No** es un ADR del arquitecto (los suyos son ADR-001..005).
-> **`status: proposed`** por la **decisión 2** (rate limit en Redis), que agrega un round-trip
-> a **todos** los requests: se implementa después de medirlo, no antes.
->
-> **La decisión 4 (revocación por pub/sub) ya está implementada y verificada en vivo**
-> (`chore/estado-compartido-gateway`): no tiene la pregunta de latencia —solo publica en el
-> `DELETE`, que es rarísimo— y restauraba una promesa que el producto ya hacía.
+> **Aceptado tras medir.** La decisión 2 (rate limit en Redis) agrega un round-trip a todos
+> los requests y se dejó pendiente hasta tener el número. Medido contra el stack, 300 muestras
+> por lado: **p50 6,21 → 6,82 ms · p95 10,76 → 11,38 ms** (+0,6 ms). Entre corridas del mismo
+> build el p50 varió 6,47–9,01 ms, o sea que **el delta es del orden del ruido de la
+> medición**: el costo está por debajo del milisegundo y no se distingue bien del jitter de
+> Docker Desktop sobre Windows.
 
 ## Context
 El gateway guarda **dos cosas en memoria del proceso**, y las dos son mecanismos de seguridad:
@@ -62,9 +62,13 @@ mantener**. Se pierde el suavizado en los bordes de la ventana; para un límite 
 La clave se guarda **hasheada** (`auth.hash_key`), no en claro: Redis no es lugar para
 credenciales, ni siquiera como parte de un nombre de clave.
 
-### 3. Si Redis no responde, se **deja pasar** — y se ve
-Un limitador caído no puede convertirse en una caída del producto: se responde el request y se
-incrementa `teleflow_rate_limit_degraded_total` + `log.error`.
+### 3. Si Redis no responde, se **cae al bucket del proceso** — y se ve
+Un limitador caído no puede convertirse en una caída del producto.
+
+> **Refinado al implementar.** El borrador decía "se deja pasar". Se hizo mejor: se degrada al
+> `TokenBucket` en memoria, que es exactamente lo que había antes de este ADR. Protege menos
+> —N réplicas, N× el límite— pero muchísimo más que no limitar, y el código ya existía. Se
+> cuenta igual en `teleflow_rate_limit_degraded_total` + `log.error`.
 
 **Pero eso es precisamente una falla silenciosa si nadie mira el contador**, así que el
 contador es la señal alertable y queda documentado como tal ([[fallas-silenciosas]]). Es el
@@ -92,16 +96,16 @@ volver a una réplica, tiene que ser una decisión escrita, no un supuesto.
   de mucha menos superficie.
 - **Cache local + pub/sub, y no "sacar el cache"**, porque quitarlo mandaría cada request a
   Postgres. El cache no es el problema; el problema era que la invalidación no cruzaba réplicas.
-- **Fail-open con contador** en vez de fail-closed: es un limitador antiabuso, no un control
+- **Degradar al bucket local en vez de fail-closed**: es un limitador antiabuso, no un control
   de acceso. El control de acceso (la validez de la key y sus scopes) sigue exigiendo Postgres,
-  y para eso `/ready` ya hace `db_ping`.
+  y para eso `/ready` ya hace `db_ping`. Devolver 429 porque el *limitador* está caído sería
+  cortar el producto por un problema de una dependencia auxiliar.
 
 ## Consequences
-- **Un round-trip a Redis por request autenticado.** Es la consecuencia que más pesa y por la
-  que este ADR está en `proposed`: hay que medirla, no suponerla. Redis en la misma red
-  responde en submilisegundos, y el gateway ya hace I/O por request (proxy al servicio
-  interno), así que *(inferencia)* el impacto relativo debería ser bajo — pero conviene
-  medirlo antes de dar el número por bueno.
+- **Un round-trip a Redis por request autenticado: +0,6 ms medidos** (ver la nota de arriba).
+  Sobre un request de ~7 ms es aceptable, y el delta queda dentro de la variación entre
+  corridas del mismo build. **Verificado en vivo con dos réplicas:** consumido el límite en la
+  réplica 1, la réplica 2 devuelve 429 sin haber atendido un solo request con esa key.
 - **Redis pasa a ser dependencia del gateway**, que hoy solo depende de Postgres. Habrá que
   decidir si entra en `/ready`: **no**, según la decisión 3 — sin Redis el gateway sigue
   sirviendo, degradado y visible.
