@@ -1,23 +1,26 @@
 {{- range $name, $svc := .Values.services }}
+{{- $fullName := printf "%s-%s" $.Release.Name $name }}
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ $name }}
+  name: {{ $fullName }}
   labels:
-    app: {{ $name }}
+    app: {{ $fullName }}
     {{- include "teleflow.labels" $ | nindent 4 }}
 spec:
   replicas: {{ $svc.replicas }}
   selector:
     matchLabels:
-      app: {{ $name }}
+      app: {{ $fullName }}
   template:
     metadata:
       labels:
-        app: {{ $name }}
+        app: {{ $fullName }}
         {{- include "teleflow.labels" $ | nindent 8 }}
     spec:
+      initContainers:
+        {{- include "teleflow.waitForSchema" $ | nindent 8 }}
       containers:
         - name: {{ $name }}
           image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
@@ -51,14 +54,18 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ $name }}
+  name: {{ $fullName }}
   labels:
-    app: {{ $name }}
+    app: {{ $fullName }}
     {{- include "teleflow.labels" $ | nindent 4 }}
 spec:
-  type: {{ if $svc.external }}LoadBalancer{{ else }}ClusterIP{{ end }}
+  {{- if $svc.external }}
+  type: {{ $.Values.gateway.service.type }}
+  {{- else }}
+  type: ClusterIP
+  {{- end }}
   selector:
-    app: {{ $name }}
+    app: {{ $fullName }}
   ports:
     - port: {{ $svc.port }}
       targetPort: {{ $svc.port }}

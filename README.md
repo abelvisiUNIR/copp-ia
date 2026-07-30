@@ -244,9 +244,24 @@ La doc consolidada (`.md` y PDF en `docs/`) es más vieja que los `.typ` y que e
 
 ## Producción
 
+El chart no tiene dependencias: Postgres, Redis y RabbitMQ son StatefulSets propios con las
+**mismas imágenes oficiales que usa el `docker-compose.yml`**, así que lo que se prueba en dev y
+en CI es la misma capa de datos que corre en producción. No hace falta `helm dependency update`.
+
 ```bash
-helm dependency update helm/teleflow
+# El Secret con las credenciales lo administra el organismo (recomendado en producción):
+kubectl -n teleflow create secret generic teleflow-secrets \
+  --from-literal=TELEFLOW_API_KEY='...'
+
 helm install teleflow helm/teleflow -n teleflow --create-namespace \
+  -f helm/teleflow/values-production.yaml \
   --set image.repository=<registry>/teleflow \
-  --set apiKeySecret=teleflow-secrets
+  --set existingSecret=teleflow-secrets
 ```
+
+Sin `existingSecret` ni `apiKey`, el `helm install` **falla diciendo cuál de los dos falta**: una
+API key por default que funciona deja la instalación arriba sin que nadie se entere.
+
+Usar siempre un **tag de imagen inmutable**. Con un tag que se reescribe (`latest`, `dev`) más
+`pullPolicy: IfNotPresent`, `helm upgrade` reporta `deployed` y los pods se quedan con el código
+viejo: el pod spec no cambió, así que no hay rollout ni aviso.

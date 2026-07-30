@@ -1,0 +1,253 @@
+{{/*
+  Capa de datos: Postgres, Redis y RabbitMQ como StatefulSets propios.
+
+  Antes eran tres subcharts de Bitnami. Se sacaron por decisión registrada (ADR
+  "de dónde salen Postgres, Redis y RabbitMQ en el chart de Helm", 2026-07-30): las imágenes que
+  esos charts pedían fueron retiradas de Docker Hub, y al investigarlo apareció algo peor y
+  permanente — el `docker-compose.yml` usa las imágenes **oficiales** y el chart usaba Bitnami,
+  así que los e2e y el job e2e de CI probaban una capa de datos distinta de la que corre en un
+  organismo.
+
+  Las imágenes y la configuración de acá son **las mismas del docker-compose.yml** a propósito.
+  Si cambia una, tiene que cambiar la otra.
+
+  Lo que traían los subcharts y NO se reescribió, para que no quede como hueco silencioso:
+  NetworkPolicies, PodDisruptionBudgets, ServiceAccounts dedicadas y el RBAC endpoint-reader de
+  RabbitMQ (que servía para clustering, y acá no hay cluster). Ninguno estaba pedido por la doc
+  ni por un ADR; entran cuando se aborde el HA de §10.2, que es su terreno.
+*/}}
+
+{{- if .Values.postgres.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "teleflow.postgresHost" . }}
+  labels:
+    app: {{ include "teleflow.postgresHost" . }}
+    {{- include "teleflow.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ include "teleflow.postgresHost" . }}
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "teleflow.postgresHost" . }}
+  labels:
+    {{- include "teleflow.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "teleflow.postgresHost" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ include "teleflow.postgresHost" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "teleflow.postgresHost" . }}
+        {{- include "teleflow.labels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.auth.username | quote }}
+            - name: POSTGRES_PASSWORD
+              value: {{ .Values.postgres.auth.password | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.auth.database | quote }}
+            # El PVC se monta en /var/lib/postgresql/data y algunos provisioners dejan ahí un
+            # `lost+found`, con lo que `initdb` se niega a arrancar por directorio no vacío.
+            # Con PGDATA en un subdirectorio, initdb lo crea él y el problema no existe.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+          # Mismos comandos que los healthcheck del docker-compose.yml.
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgres.auth.username | quote }}]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgres.auth.username | quote }}]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          volumeMounts:
+            - name: datos
+              mountPath: /var/lib/postgresql/data
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: datos
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.postgres.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.persistence.size | quote }}
+{{- end }}
+
+{{- if .Values.redis.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "teleflow.redisHost" . }}
+  labels:
+    app: {{ include "teleflow.redisHost" . }}
+    {{- include "teleflow.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ include "teleflow.redisHost" . }}
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+{{/*
+  Redis va **sin volumen**, igual que en el docker-compose.yml. No es un olvido: acá Redis es
+  cache de ASTs y pub/sub, y el durable sleep se sostiene en Postgres
+  (ADR-002 "durable sleep"), así que perder el contenido de Redis cuesta un recalculo, no un
+  dato de negocio. Si algún día se le guarda estado propio, esto pasa a necesitar PVC.
+*/}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "teleflow.redisHost" . }}
+  labels:
+    {{- include "teleflow.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "teleflow.redisHost" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ include "teleflow.redisHost" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "teleflow.redisHost" . }}
+        {{- include "teleflow.labels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: redis
+          image: {{ .Values.redis.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+{{- end }}
+
+{{- if .Values.rabbitmq.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "teleflow.rabbitmqHost" . }}
+  labels:
+    app: {{ include "teleflow.rabbitmqHost" . }}
+    {{- include "teleflow.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ include "teleflow.rabbitmqHost" . }}
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: 5672
+    - name: management
+      port: 15672
+      targetPort: 15672
+---
+{{/*
+  RabbitMQ guarda los datos en `mnesia/rabbit@$HOSTNAME`. En docker-compose hay que fijar
+  `hostname: rabbitmq` a mano, porque si no el hostname es el ID del contenedor y cada
+  recreación estrena un nodo dejando el anterior huérfano dentro del volumen (verificado en el
+  work-stream `estado-durable`: el volumen **solo** no alcanzaba).
+
+  En un StatefulSet eso sale gratis: el nombre del pod es estable (`<release>-rabbitmq-0`) y por
+  lo tanto el nombre del nodo también. Es la razón de fondo para que esto sea StatefulSet y no
+  Deployment, más allá de que la doc §10.2 lo pida.
+*/}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "teleflow.rabbitmqHost" . }}
+  labels:
+    {{- include "teleflow.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "teleflow.rabbitmqHost" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ include "teleflow.rabbitmqHost" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "teleflow.rabbitmqHost" . }}
+        {{- include "teleflow.labels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: rabbitmq
+          image: {{ .Values.rabbitmq.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              value: {{ .Values.rabbitmq.auth.username | quote }}
+            - name: RABBITMQ_DEFAULT_PASS
+              value: {{ .Values.rabbitmq.auth.password | quote }}
+          ports:
+            - containerPort: 5672
+            - containerPort: 15672
+          readinessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+          volumeMounts:
+            - name: datos
+              mountPath: /var/lib/rabbitmq
+          resources:
+            {{- toYaml .Values.rabbitmq.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: datos
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.rabbitmq.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.rabbitmq.persistence.size | quote }}
+{{- end }}

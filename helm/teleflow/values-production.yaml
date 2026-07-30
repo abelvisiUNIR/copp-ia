@@ -1,0 +1,62 @@
+# values de producción — plantilla por organismo (ADR-005: una instancia por organismo).
+#
+# La doc de arquitectura (docs/teleflow-deployment.typ §10.1) documenta el deploy como
+# `helm upgrade --install teleflow ./helm/teleflow -f values-production.yaml`, pero este
+# archivo no existía en el repo: el comando de la doc fallaba con "file not found".
+#
+# Copiar, ajustar y guardar FUERA del repo (o en el repo de infraestructura del organismo).
+# No commitear un archivo con credenciales reales.
+
+image:
+  repository: registry.example.com/teleflow/teleflow   # ← el registry del organismo
+  # Una versión fija, y sobre todo **inmutable**. Con un tag que se reescribe (`latest`, `dev`,
+  # `main`) más `pullPolicy: IfNotPresent`, `helm upgrade` reporta `deployed` y **los pods
+  # siguen con el código viejo**: el pod spec no cambió, así que Kubernetes no tiene motivo
+  # para rotarlos y no hay nada que avise. Verificado en el work-stream de Fase E.
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+uiImage:
+  repository: registry.example.com/teleflow/review-ui
+  tag: "1.0.0"
+
+# Credenciales. En producción se espera `existingSecret`: el Secret lo crea y lo rota el
+# organismo (o su gestor de secretos), y el chart solo lo consume. Debe tener la clave
+# TELEFLOW_API_KEY y, si el composer usa un proveedor real, LLM_API_KEY.
+#
+#   kubectl -n teleflow create secret generic teleflow-secrets \
+#     --from-literal=TELEFLOW_API_KEY='...' --from-literal=LLM_API_KEY='...'
+#
+# Si en cambio se define `apiKey` acá, el chart crea el Secret — pero entonces la key queda
+# en este archivo, que es exactamente lo que hay que evitar.
+existingSecret: teleflow-secrets
+
+env:
+  LLM_PROVIDER: stub          # anthropic | openai | ollama | stub
+  WORKER_CONCURRENCY: "10"
+
+# Entrada externa. La doc (§10.2) pone el gateway detrás de Ingress.
+gateway:
+  service:
+    type: ClusterIP
+  ingress:
+    enabled: true
+    className: nginx
+    host: teleflow.organismo.gub.uy       # ← el dominio del organismo
+    annotations: {}
+    tls: []                                # ← el TLS sigue pendiente (Fase E)
+
+# La capa de datos (Postgres, Redis, RabbitMQ) ya no se configura acá: son StatefulSets del
+# propio chart, con las mismas imágenes oficiales que usa el docker-compose.yml. Para apuntar a
+# una base que el organismo ya administra, poner `postgres.enabled: false` y `externalDatabase`.
+
+# PENDIENTE — decisiones de Fase E que este archivo NO resuelve todavía:
+#
+#  * HA de la capa de datos. La doc §10.2 recomienda patroni para Postgres, Sentinel para Redis
+#    y 3 nodos con quorum queues para RabbitMQ. Nada de eso está configurado acá: los tres
+#    StatefulSets son de 1 réplica.
+#
+#  * Observabilidad. Prometheus y Grafana no están en el chart; hoy solo existen en el
+#    docker-compose.
+#
+#  * Los passwords de Postgres y RabbitMQ siguen viajando por `values` en texto plano.
