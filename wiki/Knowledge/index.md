@@ -53,8 +53,9 @@ la promoción de uno a otro es deliberada, nunca automática).
   subcharts de Bitnami —cuyas imágenes ya no existen en Docker Hub— y se alinea con las
   imágenes oficiales que usa el compose, escribiendo los tres StatefulSets.
 - [[2026-07-30-scanner-de-negocio-multi-replica]] — (wiki/observabilidad) enmienda
-  a [[2026-07-24-metricas-de-negocio-gauges]]: con 3 réplicas del executor los gauges se leen
-  3×; publica una sola por ciclo (advisory lock de Postgres) y las demás bajan a 0.
+  a [[2026-07-24-metricas-de-negocio-gauges]]: con 3 réplicas del executor los gauges se leían
+  3×; el colector se muda a `metrics-service`, de **una sola réplica**. Incluye el error de
+  diseño del primer intento (advisory lock por ciclo) y por qué su test no lo detectaba.
 
 ### concepts
 - [[fallas-silenciosas]] — el patrón que más veces apareció: mecanismos que parecen proteger

@@ -10,7 +10,12 @@ tags: [adr, fase-e, observabilidad, prometheus, grafana, executor, negocio, mult
 
 > Sale del work-stream [[fase-e-helm-kind]] (Fase E, hallazgo 10). **Enmienda a
 > [[2026-07-24-metricas-de-negocio-gauges]]**, que decidió *qué* se mide y *cómo* se deriva, pero
-> no *quién* lo publica cuando hay más de un executor. **Aceptado por el owner el 2026-07-30.**
+> no *quién* lo publica cuando hay más de un executor. **Aceptado el 2026-07-30 y
+> CORREGIDO el mismo día**: la decisión original (advisory lock por ciclo) se implementó, se
+> verificó en un cluster real y **no funcionaba**. La decisión vigente es la que estaba listada
+> como segunda mejor: sacar el scanner a un componente de una sola réplica. El error de
+> razonamiento queda escrito en *Decisión corregida* en vez de reescribir la historia: es lo
+> más útil de esta página.
 
 ## Context
 `BusinessMetricsCollector` (`teleflow/executor_service/business_metrics.py`) hace un `GROUP BY`
@@ -50,62 +55,85 @@ repo —chequeo previo para el caso normal, `UNIQUE` como garantía real— y fu
 métricas se escribió después, en otro work-stream, y no lo heredó.
 
 ## Decision
-**Elegir un publicador por ciclo con un advisory lock de Postgres, y que los que no publican
-bajen sus gauges a 0.**
+**El colector vive en un componente propio, `metrics-service`, que se despliega con una sola
+réplica.** El `executor-service` (3 réplicas) ya no lo arranca. Misma imagen, otro comando —el
+mismo patrón con el que el chart corre los 5 servicios—, y en `docker-compose.yml` es un servicio
+más.
 
-En cada ciclo del scanner, la réplica intenta `pg_try_advisory_lock` sobre una clave fija del
-colector. La que lo obtiene hace el `GROUP BY` y publica; las que no, ponen sus propios gauges en
-**0** (usando el registro de labels del ciclo anterior que el colector ya mantiene, por la regla 3
-de [[2026-07-24-metricas-de-negocio-gauges]]) y sueltan. El lock se libera al terminar el ciclo,
-así que no hay líder permanente ni lógica de failover.
+No hay lock, no hay líder, no hay failover: **la garantía es topológica**. La contracara, y hay
+que decirla, es que ahora la garantía es que este componente *no se escale*. Está fijado en
+`replicas: 1` en el chart con el motivo al lado, y hay tests que lo sostienen.
 
-Los `sum(...)` del dashboard **no se tocan**: siguen siendo correctos porque solo una réplica
-aporta valores y las demás aportan 0.
+Los `sum(...)` del dashboard **no se tocan**: con un solo publicador vuelven a ser correctos.
+
+## Decisión corregida — por qué el advisory lock no servía
+**La primera decisión de este ADR fue un error de diseño, y conviene dejar escrito cuál.**
+
+Decía: "elección **por ciclo**; el lock se libera al terminar el ciclo, así no hay líder
+permanente ni lógica de failover". Suena prudente y es falso: un lock que se toma y se suelta
+dentro del ciclo **solo excluye a réplicas cuyos ciclos se solapan en el tiempo**. El ciclo dura
+milisegundos y el intervalo es de 30 s, con los pods arrancados en momentos distintos: no se
+solapan nunca. Cada réplica pedía el lock cuando ninguna otra lo tenía, lo obtenía, publicaba y
+lo soltaba. Las tres eran "la que publica", cada una en su horario.
+
+Medido en el cluster: los tres pods reportando el mismo valor, y el conteo de `pg_locks` con
+`locktype` advisory en **0** en 6 muestras seguidas. El lock jamás estaba tomado.
+
+**El test lo tapaba, y es la parte más instructiva.** El e2e forzaba el solapamiento con un
+`await asyncio.sleep(0.5)` dentro del `_collect` de las dos réplicas. Con solapamiento forzado la
+exclusión mutua funciona y el test daba `TURNOS=1`. O sea: verificaba una condición que en
+producción no ocurre. **Y pasó la verificación por mutación**, porque la mutación quitaba el
+chequeo del lock y el test con solapamiento forzado sí detecta eso.
+
+**Regla que sale de acá, distinta de las que ya están en [[fallas-silenciosas]]:** la mutación
+prueba que el test *mira el mecanismo*; **no prueba que el escenario del test ocurra en
+producción**. Cuando un test necesita construir la condición que lo hace fallar —esperas
+inyectadas, concurrencia forzada, relojes movidos— hay que preguntarse si esa condición existe
+sola afuera. Si no existe, el test no cubre lo que dice cubrir.
 
 ## Rationale
-- **Funciona igual en Kubernetes y en `docker compose`.** Es la razón que descarta la elección de
-  líder por Lease de k8s: el producto se instala por organismo
-  ([[2026-06-30-adr-005-aislamiento-instancia]]) y el compose es un modo de despliegue soportado,
-  no solo el entorno de dev. Una solución que solo funcione en k8s deja el bug vivo en la mitad
-  de las instalaciones.
-- **Postgres ya es la dependencia compartida por todos los modos de despliegue**, y ya es el
-  árbitro de la verdad en el resto del repo: `UNIQUE` + `IntegrityError` en registry, auditoría,
-  idempotencia y en los timers de rules. Esto es el mismo criterio con la primitiva que
-  corresponde a "solo uno hace esto ahora" en vez de "solo uno gana esta fila".
-- **Bajar a 0 en vez de no publicar** es la misma decisión —y por la misma razón— que la regla 3
-  del ADR original: un gauge conserva su último valor, así que una réplica que simplemente deja de
-  refrescar seguiría exportando el número viejo y el `sum` seguiría inflado. "Sin datos" y "cero"
-  no se leen igual, y acá además hay una tercera lectura peor: "dato viejo que parece actual".
-- **Elección por ciclo, sin líder persistente**, evita tener que escribir detección de caída y
-  failover. Si la réplica que tenía el lock muere, el próximo ciclo lo toma otra; el peor caso es
-  un intervalo (30 s) sin refresco, que es exactamente el peor caso que ya acepta el diseño.
-- **Efecto secundario bueno:** el costo de la query agregada deja de multiplicarse por la cantidad
-  de réplicas. Con 3 executores hoy se hacen 3 `GROUP BY` cada 30 s para publicar el mismo dato.
-- **Contra, y hay que decirlo:** las series migran de pod en pod entre ciclos, así que un panel que
-  mire una serie **por instancia** en vez del `sum` va a ver saltos. Ningún panel actual lo hace,
-  pero es una trampa para el próximo que agregue uno.
+- **Elimina el problema por construcción.** No hay coordinación que pueda estar mal: ni lock que
+  se suelte antes de tiempo, ni líder que se crea líder sin serlo, ni ventana de solapamiento que
+  razonar. Después de equivocarme razonando justamente sobre solapamiento de ciclos, el argumento
+  decisivo es que esta opción **no tiene una segunda forma de fallar**.
+- **Funciona igual en Kubernetes y en `docker compose`.** Es lo que descartaba el Lease de k8s y
+  sigue valiendo: el producto se instala por organismo
+  ([[2026-06-30-adr-005-aislamiento-instancia]]) y el compose es un modo soportado.
+- **La garantía queda en la capa que puede sostenerla.** Mismo criterio que el resto del repo,
+  sólo que acá la capa no es la base de datos sino el despliegue: cuántos procesos corren no es
+  algo que el código pueda decidir, y ahora tampoco necesita decidirlo.
+- **El costo de la query deja de multiplicarse.** Con 3 executores se hacían 3 `GROUP BY` cada
+  30 s para publicar el mismo dato.
+- **Contra, y es el precio real:** un componente más que operar, y un punto único de fallo para
+  las métricas donde antes había tres procesos publicando (mal, pero publicando). Si
+  `metrics-service` se cae, los paneles de negocio quedan sin datos hasta que vuelva — y "sin
+  datos" en un panel de backlog se lee como "no hay trabajo pendiente". Vale una alerta sobre el
+  `up` del servicio; **no está hecha**.
 
 ## Consequences
-- **Se necesita un test que falle hoy.** El caso es "dos colectores contra la misma base": uno
-  publica, el otro queda en 0. Sin eso, el arreglo es indistinguible del bug en la suite verde —
-  que es precisamente lo que pasó hasta ahora. `(inferencia)` va contra Postgres real, como los
-  e2e del registry, porque la garantía la sostiene el lock de la base y un doble diría que sí sin
-  verificar nada — mismo criterio de [[registry-cobertura]].
-- **La verificación honesta es con réplicas reales**, como se hizo en
-  [[2026-07-25-estado-compartido-gateway]]: dos executores contra el mismo Postgres, y el `sum` en
-  Prometheus dando el número real y no el doble. Se puede hacer en el cluster de kind que dejó el
-  Chunk 1.
-- **El dashboard queda intacto**, así que no hay riesgo de regresión en los paneles.
+- **Verificado en el cluster, que es lo que faltó la primera vez.** Con 3 instancias vivas en
+  `WAITING_SIGNAL`: los **tres** pods del executor reportan `no-publica` y el único pod de
+  `metrics-service` reporta **3.0**, contra un backlog real de **3** según la API. El `sum(...)`
+  vuelve a dar el número verdadero.
+- **Cuatro tests de contrato** sostienen la topología, los cuatro verificados por mutación: que el
+  executor no arranque el colector, que el chart siga en `replicas: 1`, que el compose tenga el
+  servicio y que Prometheus lo scrapee. Más un e2e que afirma **de qué target** vienen los gauges
+  (`metrics-service:8005` y nadie más), verificado devolviendo el colector al executor.
+- **Hubo que agregar `metrics-service:8005` al scrape config de Prometheus**, y faltó en el primer
+  intento: el servicio nuevo quedó fuera de la lista de targets y los paneles de negocio se
+  habrían quedado sin datos. Los e2e siguieron verdes un rato porque Prometheus **retiene las
+  series viejas** dentro de su ventana de staleness. De ahí sale el cuarto test de contrato.
+- **Gotcha de compose descubierto en el camino:** el contenedor de Prometheus tiene un **volumen
+  anónimo** en `/prometheus` que `docker compose up --force-recreate` **reutiliza**, así que las
+  series de un despliegue anterior sobreviven y pueden hacer pasar —o fallar— una verificación de
+  observabilidad por motivos que no tienen que ver con el código. Para arrancar limpio hace falta
+  `docker compose rm -sfv prometheus`. Es el espejo del hallazgo de RabbitMQ en
+  [[2026-07-25-que-se-respalda]]: allá faltaba un volumen, acá hay uno que nadie declaró.
 - **Regla que sale de acá, y es la tercera vez:** todo componente que arranque un loop de fondo
   en el lifespan de un servicio tiene que declarar qué pasa con N réplicas, **en el mismo commit
-  que lo agrega**. Los tres casos (rate limit, purga de keys, este) se escribieron sin decidirlo
-  y se descubrieron después. Candidato a entrar como pregunta fija en la checklist de
-  [[fallas-silenciosas]].
-- **Queda por revisar si hay otros loops con el mismo problema.** Los conocidos son
-  `_consume_forever` y `_timer_loop` de `rules.py` (el segundo ya está cubierto por
-  `RuleTimerLog`; el primero es un consumer de RabbitMQ, donde tener N consumidores es el
-  comportamiento deseado) y `_signal_listener` de `engine.py:87`, **que no se auditó en este
-  chunk**. Verificarlo antes de dar el tema por cerrado.
+  que lo agrega**.
+- **Queda por revisar `_signal_listener` de `engine.py:87`** con este criterio: es el otro loop de
+  fondo del executor y no se auditó.
 
 ## Alternatives
 - **Cambiar el dashboard a `max(...)` en vez de `sum(...)`** — descartada, y es la más tentadora
@@ -118,12 +146,13 @@ aporta valores y las demás aportan 0.
 - **Elección de líder con un `Lease` de Kubernetes** — descartada: ata la corrección al modo de
   despliegue en k8s y deja el bug vivo en `docker compose`, que es un modo soportado. Además
   mete una dependencia de la API de k8s en el executor, que hoy no la tiene.
-- **Sacar el scanner a un componente propio de 1 réplica** (misma imagen, otro comando, como ya
-  hace el chart con los 5 servicios) — descartada, pero es la segunda mejor y quedaría bien si el
-  advisory lock resulta incómodo. A favor: elimina el problema por construcción, sin locks. En
-  contra: suma un Deployment más a operar, hay que replicarlo en el compose, y crea un punto
-  único de fallo para las métricas donde hoy hay tres. También conviene mirarla de nuevo si algún
-  día se le agregan más loops de este tipo al executor.
+- **Advisory lock de Postgres por ciclo** — era la decisión original de este ADR. **Descartada
+  después de verificarla en un cluster: no funciona.** Ver *Decisión corregida*.
+- **Advisory lock sostenido (líder persistente)** — descartada. Funcionaría, pero tiene una trampa
+  de corrección: una reconexión transparente del cliente deja la sesión nueva sin el lock y la
+  réplica se cree líder sin serlo. Habría que detectar la reconexión comparando
+  `pg_backend_pid()`. Más código y más maneras de equivocarse para una garantía que la topología
+  da gratis.
 - **Un exporter aparte que consulte Postgres** (postgres_exporter con query custom) — ya estaba
   descartada en [[2026-07-24-metricas-de-negocio-gauges]] y sigue: dejaría la definición del
   negocio ("qué estados están vivos") fuera del código que la implementa.
