@@ -87,6 +87,28 @@ reviewUi:
   port: 3100
   replicas: 2
 
+# Observabilidad. El chart trae los **puntos de integración**, no un stack de monitoreo: un
+# organismo con Kubernetes casi siempre ya tiene Prometheus y Grafana, y meterle un segundo le
+# duplica infraestructura y parte las métricas en dos lugares. Un organismo que no tenga nada
+# necesita instalar algo como kube-prometheus-stack aparte — este chart no se lo resuelve.
+observabilidad:
+  # Anotaciones prometheus.io/* en los pods. Inertes si nadie las mira, así que vienen puestas.
+  scrapeAnnotations: true
+  serviceMonitor:
+    # Requiere el CRD del Prometheus Operator: encenderlo sin el operator instalado hace
+    # fallar el install. Por eso no viene puesto.
+    enabled: false
+    interval: 30s
+    # Muchas instalaciones exigen una etiqueta para que su Prometheus adopte el ServiceMonitor
+    # (p. ej. `release: kube-prometheus-stack`). Sin la etiqueta correcta se crea y se ignora.
+    labels: {}
+  dashboards:
+    # ConfigMap con los dashboards, para el sidecar de Grafana. Sin sidecar no molesta, pero
+    # tampoco sirve, así que es opt-in.
+    enabled: false
+    label: grafana_dashboard
+    labelValue: "1"
+
 migrations:
   enabled: true  # Job `alembic upgrade head` (Job normal, NO hook — ver migrate-job.yaml)
   # Segundos que un initContainer espera a que Postgres acepte conexiones antes de rendirse.

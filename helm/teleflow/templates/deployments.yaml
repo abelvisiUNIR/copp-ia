@@ -18,6 +18,15 @@ spec:
       labels:
         app: {{ $fullName }}
         {{- include "teleflow.labels" $ | nindent 8 }}
+      {{- if $.Values.observabilidad.scrapeAnnotations }}
+      annotations:
+        # Descubrimiento por anotaciones: lo lee la configuración clásica de `kubernetes_sd`.
+        # Son inertes si el organismo no las mira, y sin ellas los servicios no aparecen en
+        # ningún Prometheus salvo que alguien los agregue a mano.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ $svc.port | quote }}
+        prometheus.io/path: /metrics
+      {{- end }}
     spec:
       initContainers:
         {{- include "teleflow.waitForSchema" $ | nindent 8 }}
@@ -67,6 +76,8 @@ spec:
   selector:
     app: {{ $fullName }}
   ports:
-    - port: {{ $svc.port }}
+    # El nombre importa: el ServiceMonitor referencia el puerto por nombre, no por número.
+    - name: http
+      port: {{ $svc.port }}
       targetPort: {{ $svc.port }}
 {{- end }}

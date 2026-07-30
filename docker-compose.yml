@@ -172,8 +172,11 @@ services:
 
   grafana:
     build:
-      context: ./observability
-      dockerfile: grafana.Dockerfile
+      # Contexto en la raíz: los dashboards viven en helm/teleflow/dashboards/ para que el
+      # chart pueda leerlos (Helm solo accede a archivos de adentro del chart) y no haya dos
+      # copias desincronizándose.
+      context: .
+      dockerfile: observability/grafana.Dockerfile
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}

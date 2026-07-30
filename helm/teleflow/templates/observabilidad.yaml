@@ -1,0 +1,64 @@
+{{/*
+  Observabilidad: el chart trae los **puntos de integración**, no un stack de monitoreo.
+
+  Motivo: TeleFlow se instala por organismo (ADR-005), y un organismo con Kubernetes casi
+  siempre ya tiene Prometheus y Grafana. Meterle un segundo Prometheus le duplica
+  infraestructura que no pidió y —peor— parte las métricas en dos lugares, así que ninguna de
+  las dos vistas cuenta la historia completa. Lo que faltaba no era el stack: era que el stack
+  del organismo pudiera **encontrar** a TeleFlow y traer sus dashboards.
+
+  Tres piezas, cada una opt-out/opt-in según cuán universal sea:
+
+  1. Anotaciones de scrape en los pods (por default SÍ): las lee la configuración clásica de
+     `kubernetes_sd` por anotaciones. Son inertes si nadie las mira.
+  2. `ServiceMonitor` (por default NO): lo consume el Prometheus Operator, y **requiere que su
+     CRD exista**. Encenderlo sin el operator instalado hace fallar el install, por eso no
+     viene puesto.
+  3. Los dashboards como ConfigMap (por default NO): los levanta el sidecar de Grafana buscando
+     una etiqueta. Sin sidecar, el ConfigMap no molesta a nadie, pero tampoco sirve.
+
+  **Lo que este chart NO resuelve, dicho explícito:** un organismo sin ningún monitoreo sigue
+  sin tenerlo. Para ese caso hay que instalar aparte algo como kube-prometheus-stack; está en
+  el README.
+*/}}
+{{- if .Values.observabilidad.dashboards.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-dashboards
+  labels:
+    {{- include "teleflow.labels" . | nindent 4 }}
+    # La etiqueta que busca el sidecar de Grafana. Es configurable porque cada instalación la
+    # define a su gusto: si no coincide con la del organismo, el ConfigMap se ignora en
+    # silencio y los paneles no aparecen.
+    {{ .Values.observabilidad.dashboards.label }}: {{ .Values.observabilidad.dashboards.labelValue | quote }}
+data:
+  {{- /* Una sola fuente: los mismos archivos que hornea la imagen de Grafana del compose. */}}
+  {{- range $ruta, $_ := .Files.Glob "dashboards/*.json" }}
+  {{ base $ruta }}: |
+{{ $.Files.Get $ruta | indent 4 }}
+  {{- end }}
+{{- end }}
+
+{{- if .Values.observabilidad.serviceMonitor.enabled }}
+{{- range $name, $svc := .Values.services }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+  labels:
+    {{- include "teleflow.labels" $ | nindent 4 }}
+    {{- with $.Values.observabilidad.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ $.Release.Name }}-{{ $name }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ $.Values.observabilidad.serviceMonitor.interval }}
+{{- end }}
+{{- end }}

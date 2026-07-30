@@ -128,8 +128,9 @@ teleflow/
   cli.py             CLI tflow
 review-ui/           React + Vite (diff viewer PR-style)
 alembic/             migraciones (no create_all en producción)
-helm/teleflow/       chart para K8s/RKE2 (réplicas según sección 9.1)
-observability/       prometheus.yml + dashboards Grafana
+helm/teleflow/       chart para K8s/RKE2 (réplicas según sección 10.2)
+helm/teleflow/dashboards/  dashboards Grafana — única copia, la usan compose y el chart
+observability/       prometheus.yml + provisioning de Grafana para el compose
 examples/            ceibal.tflow · venta_internet_hogar.tflow
 tests/               pytest (parser, validador, evaluador, DAG)
 ```
@@ -210,13 +211,42 @@ Requiere el scope `audit:read`, que se otorga explícitamente: no lo hereda `key
 
 ## Observabilidad
 
-Prometheus (`:9090`) scrapea `/metrics` de los 5 servicios cada 15 s. Grafana (`:3001`) trae
+Prometheus (`:9090`) scrapea `/metrics` de los servicios cada 15 s. Grafana (`:3001`) trae
 dos dashboards provisionados en la carpeta *TeleFlow*:
 
 | Dashboard | Responde |
 |---|---|
 | **TeleFlow · Overview** | Salud técnica: requests, latencia p95, tasa de error, throughput de steps |
 | **TeleFlow · Negocio** | Trabajo pendiente: backlog de human_tasks por step y su antigüedad, procesos en curso por estado, terminados por hora |
+
+Los gauges de negocio los publica **`metrics-service`, que corre en una sola réplica**. No es un
+detalle de despliegue: los gauges llevan el valor absoluto y los paneles suman entre instancias,
+así que dos procesos publicando hacen leer el doble del trabajo pendiente, sin que nada falle.
+**No escalar ese servicio.**
+
+### En Kubernetes
+
+El chart trae los **puntos de integración**, no un stack de monitoreo: un organismo con
+Kubernetes casi siempre ya tiene Prometheus y Grafana, y montarle un segundo le duplica
+infraestructura y parte las métricas en dos lugares. Un organismo que no tenga nada necesita
+instalar algo como `kube-prometheus-stack` aparte — este chart no se lo resuelve.
+
+| Pieza | Default | Para qué |
+|---|---|---|
+| Anotaciones `prometheus.io/*` en los pods | **sí** | descubrimiento por anotaciones; inertes si nadie las mira |
+| `ServiceMonitor` | no | Prometheus Operator. **Requiere su CRD**: encenderlo sin el operator hace fallar el install |
+| ConfigMap con los dashboards | no | lo levanta el sidecar de Grafana buscando la etiqueta `grafana_dashboard` |
+
+```bash
+helm upgrade --install teleflow helm/teleflow -n teleflow   --set observabilidad.serviceMonitor.enabled=true   --set observabilidad.serviceMonitor.labels.release=kube-prometheus-stack   --set observabilidad.dashboards.enabled=true
+```
+
+La etiqueta del `ServiceMonitor` importa: muchas instalaciones solo adoptan los que la traen, y
+sin ella el recurso se crea y **se ignora en silencio**.
+
+Los dashboards viven en `helm/teleflow/dashboards/` y no en `observability/` porque Helm solo
+puede leer archivos de adentro del chart. Es una sola copia con dos consumidores —la imagen de
+Grafana del compose y el ConfigMap del chart—, para que no haya dos versiones desincronizadas.
 
 Las métricas de negocio son de dos clases y no se mezclan:
 
