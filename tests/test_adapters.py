@@ -12,6 +12,7 @@ from teleflow.dsl.ast_nodes import IntegrationDef, Ref, StepDef
 from teleflow.executor_service.adapters import (
     RetryableStepError,
     StepExecutionError,
+    is_retryable_transport_error,
     eval_payload,
     is_retryable_status,
     render_template,
@@ -26,8 +27,41 @@ from teleflow.executor_service.adapters import (
 def test_resolve_env(monkeypatch):
     monkeypatch.setenv("TOKEN", "secret")
     assert resolve_env("Bearer ${env.TOKEN}") == "Bearer secret"
-    assert resolve_env("${env.NO_EXISTE}") == ""      # faltante -> ""
     assert resolve_env(123) == 123                     # no-str pasa igual
+
+
+def test_una_variable_de_entorno_faltante_falla_y_dice_cual(monkeypatch):
+    """Antes se reemplazaba por cadena vacía, y era una falla silenciosa costosa.
+
+    Con `base_url: "${env.LMS_URL}"` sin definir, el deploy pasaba, la validación pasaba, y el
+    fallo aparecía cuando un expediente real llegaba al step: un `UnsupportedProtocol` sobre
+    `/api/credentials` que no nombra la variable. Medido en un stack levantado: instancia FAILED
+    después de gastar 4 intentos.
+    """
+    monkeypatch.delenv("NO_EXISTE", raising=False)
+
+    with pytest.raises(StepExecutionError) as err:
+        resolve_env("${env.NO_EXISTE}/api/x")
+
+    assert "NO_EXISTE" in str(err.value), "el error tiene que nombrar la variable que falta"
+
+
+def test_una_variable_vacia_cuenta_como_faltante(monkeypatch):
+    """`LMS_URL=` en el .env produce el mismo fallo que no declararla."""
+    monkeypatch.setenv("VACIA", "")
+
+    with pytest.raises(StepExecutionError):
+        resolve_env("${env.VACIA}/api/x")
+
+
+def test_falta_de_config_no_es_transitoria(monkeypatch):
+    """Ningún reintento va a crear la variable: tiene que fallar al toque."""
+    monkeypatch.delenv("NO_EXISTE", raising=False)
+
+    with pytest.raises(StepExecutionError) as err:
+        resolve_env("${env.NO_EXISTE}")
+
+    assert not isinstance(err.value, RetryableStepError)
 
 
 def test_render_template():
@@ -251,3 +285,46 @@ async def test_notification_email_smtp(monkeypatch):
     assert sent["host"] == "smtp.x"
     assert sent["to"] == "ana@x.com"
     assert sent["body"] == "Bienvenida"
+
+
+# --------------------------------------------------- clasificación de errores de transporte
+#
+# `httpx.HTTPError` es la clase base de todo: el `except` que la atrapaba y levantaba
+# RetryableStepError gastaba los reintentos completos en errores que nunca van a andar.
+# Medido en un stack levantado: un base_url vacío daba UnsupportedProtocol y el step reportaba
+# "agotó 4 intentos", que se lee como integración intermitente y no como config mal puesta.
+
+
+@pytest.mark.parametrize("exc", [
+    httpx.UnsupportedProtocol("sin esquema"),
+    httpx.LocalProtocolError("request mal armado de este lado"),
+])
+def test_un_request_mal_armado_no_gasta_reintentos(exc):
+    assert not is_retryable_transport_error(exc)
+
+
+@pytest.mark.parametrize("exc", [
+    httpx.ConnectError("conexión rechazada"),
+    httpx.ReadTimeout("tardó demasiado"),
+    httpx.RemoteProtocolError("el otro lado cortó raro"),
+])
+def test_los_fallos_de_red_si_son_transitorios(exc):
+    assert is_retryable_transport_error(exc)
+
+
+@pytest.mark.asyncio
+async def test_una_base_url_sin_protocolo_falla_permanente(monkeypatch):
+    """El caso exacto que dejó una instancia FAILED tras 4 intentos.
+
+    Acá la base_url viene literal (no por ${env.X}) para probar la clasificación del transporte
+    y no la resolución de variables, que ya tiene sus propios tests.
+    """
+    step = StepDef(name="crear_credenciales_lms", type="automated", path="/api/credentials")
+    integration = IntegrationDef(name="lms", config={"type": "rest", "base_url": ""})
+
+    with pytest.raises(StepExecutionError) as err:
+        await run_automated(step, integration, {})
+
+    assert not isinstance(err.value, RetryableStepError), (
+        "una URL sin protocolo no se arregla reintentando"
+    )
