@@ -56,6 +56,10 @@ la promoción de uno a otro es deliberada, nunca automática).
   a [[2026-07-24-metricas-de-negocio-gauges]]: con 3 réplicas del executor los gauges se leían
   3×; el colector se muda a `metrics-service`, de **una sola réplica**. Incluye el error de
   diseño del primer intento (advisory lock por ciclo) y por qué su test no lo detectaba.
+- [[2026-07-30-propiedad-de-instancia-en-el-executor]] — (wiki/executor) una
+  instancia en vuelo tiene dueño con lease y solo el dueño la ejecuta: `_recover()` corría en las
+  3 réplicas sin reclamar nada y **cada deploy con un expediente en vuelo lo ejecutaba 3 veces**
+  (reproducido: 63 requests donde iban 21, y 3 transiciones a FAILED).
 
 ### concepts
 - [[fallas-silenciosas]] — el patrón que más veces apareció: mecanismos que parecen proteger
