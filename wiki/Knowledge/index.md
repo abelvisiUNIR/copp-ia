@@ -63,7 +63,12 @@ la promoción de uno a otro es deliberada, nunca automática).
 
 ### concepts
 - [[fallas-silenciosas]] — el patrón que más veces apareció: mecanismos que parecen proteger
-  y avisan sin cortar. Tres casos verificados y las preguntas para detectar el próximo.
+  y avisan sin cortar. **13 casos verificados**, las preguntas para detectar el próximo, y por
+  qué la verificación por mutación **no alcanza** (prueba que el test mira el mecanismo, no que
+  el escenario ocurra en producción).
+- [[supuesto-de-proceso-unico]] — "esto corre en un solo proceso": el supuesto que nadie
+  escribió y apareció **cuatro veces**. Las tres formas de resolverlo (estado compartido, una
+  sola réplica, lease) y por qué elegir mal cuesta caro.
 
 ### investigations
 - [[2026-07-09-validacion-doc-vs-codigo]] — doc vs código: 26/26 tests ✅, mypy strict ❌,

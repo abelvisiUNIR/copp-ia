@@ -3,13 +3,13 @@ project: copp-ia
 type: concept
 provenance: copp-ia@devyos@3db6cd3
 created: 2026-07-24
-updated: 2026-07-25
+updated: 2026-07-30
 tags: [concepto, calidad, resiliencia, observabilidad, patron]
 ---
 
 # Fallas silenciosas — el patrón que más veces apareció en este proyecto
 
-> Provenance: `copp-ia@devyos@3db6cd3`. Sintetizado de **nueve** work-streams distintos
+> Provenance: `copp-ia@devyos@74a0002`. Sintetizado de **diez** work-streams distintos
 > (`except-swallow-audit`, `limpieza-dx-openapi`, `observabilidad-negocio`,
 > `composer-llm-hardening`, `auditoria-persistida`, `registry-cobertura`,
 > `idempotencia-execute`, `review-ui-tests`, `estado-durable`) que encontraron el mismo
@@ -36,6 +36,10 @@ meses en el repo antes de encontrarse, y ninguno se encontró por un test.
 | 6 | `gateway/main.py` | un middleware que registra al final = registra siempre | El 500 lo arma un middleware de **Starlette** que envuelve a los de la app: una excepción no atrapada salta por encima del middleware propio, `call_next` propaga y el código que sigue nunca corre. Un deploy que crasheaba a mitad de camino no dejaba registro de auditoría — el intento más interesante de todos | `982f12b` (`auditoria-persistida`) |
 | 9 | `docker-compose.yml` | colas `durable=True` + mensajes `PERSISTENT` = la DLQ sobrevive | El servicio `rabbitmq` no tenía volumen, así que `/var/lib/rabbitmq` vivía en la capa escribible del contenedor: la DLQ sobrevivía a un `restart` y **se vaciaba con `up --build`**, el comando del README. Y las colas reaparecían (las declara la app), así que el operador veía la DLQ en **0** — que se lee como "no hubo fallas". Agregar el volumen **no alcanzó**: el nombre del nodo (`mnesia/rabbit@$HOSTNAME`) dependía del ID del contenedor, así que cada recreación estrenaba un nodo y dejaba el anterior huérfano dentro del volumen | `estado-durable` |
 | 8 | `gateway/main.py` | mandar `Idempotency-Key` = estar protegido | El proxy arma los headers **desde cero** (correcto: evita colar headers del exterior a los servicios internos), así que el header estándar del cliente no llegaba al executor. El gateway respondía 202 y no había ninguna deduplicación: el cliente creía estar protegido de los reintentos y no lo estaba | `b6c7668` (`idempotencia-execute`) |
+| 10 | `helm/teleflow/Chart.yaml` | un chart versionado = un chart instalable | Las imágenes que pedían los tres subcharts de Bitnami **fueron retiradas de Docker Hub**. `helm dependency update` sigue diciendo éxito —los *charts* siguen publicados— y el fallo aparece recién cuando un pod intenta bajar la imagen: ni el render ni un lint lo ven. **Variante nueva: el artefacto no cambió y dejó de funcionar solo.** Todos los casos anteriores eran código propio ocultando un fallo; este es una dependencia externa que se movió abajo | `23cc2c7` (`fase-e-helm-kind`) |
+| 11 | tag de imagen mutable | `helm upgrade` → `deployed` = el código nuevo está corriendo | Con un tag que se reescribe (`latest`, `dev`) más `pullPolicy: IfNotPresent`, el pod spec renderizado es **byte a byte el mismo**: Kubernetes no tiene motivo para rotar los pods y tampoco vuelve a bajar la imagen. Helm reporta éxito porque, desde su punto de vista, el estado declarado ya se cumple. Verificado: `hasattr(..., '_tomar_turno')` → `False` dentro del pod, después de un upgrade "exitoso" | documentado (regla de tag inmutable) |
+| 12 | `executor_service/engine.py` | `_recover()` retoma lo que quedó a mitad | Corría en **cada** réplica y nadie reclamaba la instancia: con 3 réplicas, **cada deploy con un expediente en vuelo lo ejecutaba 3 veces**. Medido: 63 requests donde iban 21, y **tres** transiciones `IN_PROGRESS → FAILED` del mismo caso. Con una integración real son tres altas, tres correos. Es el daño que la idempotencia de `/execute` evita **desde afuera**, ocurriendo desde adentro | `f168452` (`fase-e-helm-kind`) |
+| 13 | `executor_service/adapters.py` | `${env.LMS_URL}` sin definir = error visible | Se reemplazaba por **cadena vacía**: el deploy pasaba, la validación pasaba, y el fallo aparecía cuando un expediente real llegaba al step, con un `UnsupportedProtocol` que no nombra la variable. Peor en credenciales: un `Bearer ${env.TOKEN}` sin TOKEN mandaba el header **vacío**, y con un servidor permisivo el request salía bien **sin autenticar** | `c42f13f` (`fase-e-helm-kind`) |
 | 7 | `registry_service/main.py` | `latest` apunta a la versión mayor | `_semver_key` quitaba los no-dígitos de cada chunk, así que el `1` de `rc1` se sumaba al patch: `1.0.0-rc1` → `(1,0,1)`, **mayor** que `1.0.0`. Registrar un candidato después del estable movía `latest` al candidato y el executor disparaba procesos de negocio con él. El 201 llegaba igual y el pointer apuntaba a algo que existía | `4c7ce34` (`registry-cobertura`) |
 
 ## La forma común
@@ -139,6 +143,31 @@ Y al escribir el test que lo fija: **verificarlo con una mutación**. En
 propósito el nombre de una métrica (tiene que fallar) — porque un test vacuo que no puede
 fallar nunca es, él mismo, otra falla silenciosa. Ya había aparecido uno así en
 `limpieza-dx-openapi`.
+
+**Pero la mutación no alcanza, y esto costó caro.** La verificación por mutación prueba que el
+test **mira el mecanismo**; no prueba que el **escenario del test ocurra en producción**. En
+`fase-e-helm-kind` un e2e verificaba exclusión mutua entre dos colectores forzando el
+solapamiento temporal con un `sleep` inyectado: pasaba la mutación (quitar el lock lo hacía
+fallar) **y pasaba con el bug puesto**, porque en el sistema real los ciclos nunca se solapan.
+El arreglo se dio por bueno, se commiteó afirmándolo, y el bug siguió vivo hasta que se midió en
+un cluster.
+
+La pregunta que faltaba: **¿esta condición se produce sola afuera, o la estoy construyendo yo?**
+Cuando un test necesita fabricar la condición que lo hace fallar —esperas inyectadas,
+concurrencia forzada, relojes movidos— hay que sospechar que está probando un escenario que el
+sistema no genera. En un solo día aparecieron **tres** tests vacuos de esta familia, y los tres
+pasaban por el mismo motivo de fondo: reproducían una versión del escenario que el sistema real
+no produce (un gauge compartido dentro de un proceso, cuando la multiplicación ocurre *entre*
+procesos; un conteo de instancias en Prometheus, cuando el compose scrapea un target DNS único).
+
+Regla práctica: **el escenario del test tiene que ser el que el sistema produce solo.** Si el bug
+se dispara en cada deploy, el test tiene que ser un deploy — no dos hilos sincronizados a mano.
+
+## Un pariente cercano, que no es lo mismo
+El supuesto **"esto corre en un solo proceso"** apareció cuatro veces en este repo y comparte el
+síntoma —degrada una garantía sin romper nada visible— pero tiene otra raíz: acá el mecanismo de
+aviso existe y no corta; allá **no hay ningún mecanismo**, porque nadie decidió que hiciera
+falta. Tiene su propia página: [[supuesto-de-proceso-unico]].
 
 ## Qué NO es una falla silenciosa
 No todo lo que se pasa por alto entra acá, y forzar el encaje hace perder el patrón. Caso real
