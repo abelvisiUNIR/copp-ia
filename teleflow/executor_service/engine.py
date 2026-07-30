@@ -13,12 +13,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import socket
 import uuid
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 
 import networkx as nx
 import redis.asyncio as aioredis
 from prometheus_client import Counter
+from sqlalchemy import CursorResult
+from sqlalchemy import or_ as sa_or
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -79,6 +84,12 @@ class ExecutionEngine:
         self._tasks: set[asyncio.Task[Any]] = set()
         self._listener_task: asyncio.Task[Any] | None = None
         self._stopping = False
+        # Identidad de este proceso, para escribirla como dueño de las instancias que ejecuta.
+        # Hostname + pid: en Kubernetes el hostname es el nombre del pod, así que un expediente
+        # trabado dice quién lo tenía. No se valida contra ninguna tabla — el dueño vale por el
+        # vencimiento del lease, no por existir.
+        self._identidad = f"{socket.gethostname()}:{os.getpid()}"
+        self._renovaciones: dict[uuid.UUID, asyncio.Task[Any]] = {}
 
     # ----------------------------------------------------------- lifecycle
 
@@ -109,12 +120,142 @@ class ExecutionEngine:
         if exc is not None:
             log.error("background_task_failed", error=repr(exc))
 
+    # -------------------------------------------------- propiedad de la instancia
+    #
+    # Una instancia en vuelo tiene dueño (`driven_by`) y un vencimiento
+    # (`lease_expires_at`). Solo el dueño la ejecuta. Sin esto, cada réplica recuperaba al
+    # arrancar TODAS las instancias en vuelo y las ejecutaba en paralelo: medido en un cluster
+    # de 3 réplicas, el mismo step corrido 3 veces y 3 transiciones a FAILED del mismo
+    # expediente. La condición de disparo era cada deploy.
+    #
+    # Ver el ADR de la wiki "quién es dueño de una instancia en vuelo cuando el executor tiene
+    # varias réplicas".
+
+    @staticmethod
+    async def _filas_afectadas(session: AsyncSession, sentencia: Any) -> int:
+        """Ejecuta un UPDATE y devuelve cuántas filas tocó.
+
+        Existe para no repetir el `cast`: `session.execute()` está tipado como `Result`, que no
+        declara `rowcount`, aunque en tiempo de ejecución un UPDATE devuelve un `CursorResult`
+        que sí lo tiene. El rowcount es lo que decide quién gana el reclamo, así que conviene
+        que la conversión esté en un solo lugar y explicada.
+        """
+        resultado = cast(CursorResult[Any], await session.execute(sentencia))
+        return int(resultado.rowcount)
+
+    def _ahora(self) -> datetime:
+        return datetime.now(timezone.utc)
+
+    def _vencimiento(self) -> datetime:
+        return self._ahora() + timedelta(seconds=self._settings.instance_lease_seconds)
+
+    async def _tomar_lease(self, instance_id: uuid.UUID) -> bool:
+        """Reclama la instancia. `True` solo si esta réplica se la quedó.
+
+        Es un `UPDATE ... WHERE` y lo que decide es el **rowcount**: si otra réplica la tiene
+        con lease vigente, el `WHERE` no matchea y el update afecta 0 filas. La garantía la
+        sostiene la base, no el orden en que arrancan los pods — mismo criterio que el `UNIQUE`
+        de registry, auditoría, idempotencia y los timers de rules.
+
+        Reclamar de nuevo algo que ya es de esta réplica también cuenta como éxito: renueva y
+        sigue (un `_drive` reentrante sobre la misma instancia no es un conflicto).
+        """
+        async with self._sessionmaker() as session:
+            filas = await self._filas_afectadas(
+                session,
+                update(ProcessInstance)
+                .where(
+                    ProcessInstance.id == instance_id,
+                    sa_or(
+                        ProcessInstance.driven_by.is_(None),
+                        ProcessInstance.driven_by == self._identidad,
+                        ProcessInstance.lease_expires_at.is_(None),
+                        ProcessInstance.lease_expires_at < self._ahora(),
+                    ),
+                )
+                .values(driven_by=self._identidad, lease_expires_at=self._vencimiento()),
+            )
+            await session.commit()
+        return bool(filas)
+
+    async def _renovar_lease(self, instance_id: uuid.UUID) -> bool:
+        """Extiende el lease. `False` si esta réplica ya no es la dueña.
+
+        El `WHERE driven_by = yo` es lo que hace que una réplica que perdió la instancia
+        —porque tardó tanto que el lease venció y otra la tomó— se entere en vez de seguir
+        trabajando sobre algo que ya no le pertenece.
+        """
+        async with self._sessionmaker() as session:
+            filas = await self._filas_afectadas(
+                session,
+                update(ProcessInstance)
+                .where(
+                    ProcessInstance.id == instance_id,
+                    ProcessInstance.driven_by == self._identidad,
+                )
+                .values(lease_expires_at=self._vencimiento()),
+            )
+            await session.commit()
+        return bool(filas)
+
+    async def _soltar_lease(self, instance_id: uuid.UUID) -> None:
+        """Libera la instancia al terminar el drive, sin esperar el vencimiento.
+
+        No es imprescindible —el lease vencería solo— pero sin esto una instancia que quedó
+        dormida en `WAITING_SIGNAL` seguiría marcada como "en manos de" una réplica durante un
+        lease entero, y eso se lee mal cuando alguien mira la tabla para entender qué pasa.
+        """
+        async with self._sessionmaker() as session:
+            await session.execute(
+                update(ProcessInstance)
+                .where(
+                    ProcessInstance.id == instance_id,
+                    ProcessInstance.driven_by == self._identidad,
+                )
+                .values(driven_by=None, lease_expires_at=None)
+            )
+            await session.commit()
+
+    async def _renovar_hasta_que_termine(self, instance_id: uuid.UUID) -> None:
+        """Renueva el lease mientras el drive trabaja.
+
+        Renueva a un tercio del vencimiento: dos renovaciones perdidas seguidas todavía no
+        pierden la instancia. Si el proceso muere, este loop muere con él, el lease vence y
+        otra réplica puede tomar el trabajo — que es exactamente lo que `_recover()` existe
+        para hacer.
+        """
+        intervalo = max(1.0, self._settings.instance_lease_seconds / 3)
+        while not self._stopping:
+            await asyncio.sleep(intervalo)
+            try:
+                if not await self._renovar_lease(instance_id):
+                    log.warning("lease_perdido", instance_id=str(instance_id))
+                    return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — reintenta en el próximo ciclo
+                log.error("lease_renovacion_fallida",
+                          instance_id=str(instance_id), error=str(exc))
+
     async def _recover(self) -> None:
-        """Al arrancar: retoma instancias en vuelo y dormidas con señal pendiente."""
+        """Al arrancar: retoma lo que quedó **huérfano**, no todo lo que esté en vuelo.
+
+        La diferencia es el bug que arregló este método: antes recuperaba toda instancia en
+        vuelo, así que N réplicas arrancando a la vez ejecutaban N veces el mismo expediente.
+        Ahora el filtro es "sin dueño o con el lease vencido", y encima cada instancia se
+        reclama con `_tomar_lease` antes de ejecutarla: si dos réplicas leen la misma fila a la
+        vez, solo una gana el `UPDATE`.
+        """
+        ahora = self._ahora()
         async with self._sessionmaker() as session:
             in_flight = (await session.execute(
                 select(ProcessInstance.id).where(
-                    ProcessInstance.status.in_(("TRIGGERED", "IN_PROGRESS", "RETRYING"))
+                    ProcessInstance.status.in_(("TRIGGERED", "IN_PROGRESS", "RETRYING")),
+                    sa_or(
+                        ProcessInstance.driven_by.is_(None),
+                        ProcessInstance.lease_expires_at.is_(None),
+                        ProcessInstance.lease_expires_at < ahora,
+                    ),
                 )
             )).scalars().all()
             waiting = (await session.execute(
@@ -124,6 +265,9 @@ class ExecutionEngine:
         for instance_id in in_flight:
             log.info("recover_in_flight", instance_id=str(instance_id))
             self._spawn(self._drive(instance_id))
+        # El path de señales no necesita lease: `_apply_signals_and_resume` abre la instancia
+        # con FOR UPDATE y corta si el estado ya no es WAITING_SIGNAL, así que de N réplicas
+        # solo una aplica. Ya era seguro para multi-réplica y se deja como estaba.
         for instance_id in set(waiting):
             log.info("recover_waiting_signal", instance_id=str(instance_id))
             self._spawn(self._apply_signals_and_resume(instance_id))
@@ -240,16 +384,34 @@ class ExecutionEngine:
     # --------------------------------------------------------------- drive
 
     async def _drive(self, instance_id: uuid.UUID) -> None:
-        async with self._semaphore:
+        # Reclamar ANTES del semáforo: si otra réplica la tiene, no hay que ocupar un worker
+        # para descubrirlo.
+        if not await self._tomar_lease(instance_id):
+            log.info("instancia_con_otro_dueno", instance_id=str(instance_id))
+            return
+        renovacion = asyncio.create_task(self._renovar_hasta_que_termine(instance_id))
+        self._renovaciones[instance_id] = renovacion
+        try:
+            async with self._semaphore:
+                try:
+                    await self._run(instance_id)
+                except asyncio.CancelledError:
+                    raise
+                except StepFailed as exc:
+                    await self._mark_failed(instance_id, exc.step_name, str(exc))
+                except Exception as exc:
+                    log.exception("instance_crashed", instance_id=str(instance_id))
+                    await self._mark_failed(instance_id, None, f"error interno: {exc}")
+        finally:
+            renovacion.cancel()
+            self._renovaciones.pop(instance_id, None)
+            # Soltar el lease aunque el drive haya fallado: si no, la instancia queda marcada
+            # como "en manos de" esta réplica un lease entero y nadie más la puede retomar.
             try:
-                await self._run(instance_id)
-            except asyncio.CancelledError:
-                raise
-            except StepFailed as exc:
-                await self._mark_failed(instance_id, exc.step_name, str(exc))
-            except Exception as exc:
-                log.exception("instance_crashed", instance_id=str(instance_id))
-                await self._mark_failed(instance_id, None, f"error interno: {exc}")
+                await self._soltar_lease(instance_id)
+            except Exception as exc:  # noqa: BLE001 — vencería solo; no vale tumbar el drive
+                log.error("lease_liberacion_fallida",
+                          instance_id=str(instance_id), error=str(exc))
 
     async def _run(self, instance_id: uuid.UUID) -> None:
         snapshot = await self._load(instance_id)
@@ -609,30 +771,56 @@ class ExecutionEngine:
             await session.commit()
 
     async def _set_status(self, instance_id: uuid.UUID, from_status: str,
-                          to_status: str, clear_error: bool = False) -> None:
+                          to_status: str, clear_error: bool = False) -> bool:
+        """Cambia el estado **solo si sigue siendo el que se creía**, y devuelve si lo logró.
+
+        Antes era un `UPDATE` incondicional, y por eso no podía detectar que otro proceso se le
+        había adelantado: dos réplicas ejecutando el mismo expediente escribían las dos su
+        transición, y `instance_transitions` terminaba con tres `IN_PROGRESS → FAILED` del mismo
+        step. El lease es lo que evita que lleguen dos; esta guarda es la segunda red, y hace
+        que la carrera —si alguna vez vuelve— sea visible en vez de silenciosa.
+        """
         values: dict[str, Any] = {"status": to_status}
         if clear_error:
             values["error"] = None
         async with self._sessionmaker() as session:
-            await session.execute(
+            filas = await self._filas_afectadas(
+                session,
                 update(ProcessInstance).where(
-                    ProcessInstance.id == instance_id).values(**values))
+                    ProcessInstance.id == instance_id,
+                    ProcessInstance.status == from_status,
+                ).values(**values))
+            if not filas:
+                await session.rollback()
+                log.warning("transicion_descartada", instance_id=str(instance_id),
+                            esperaba=from_status, hacia=to_status)
+                return False
             session.add(InstanceTransition(
                 instance_id=instance_id, from_status=from_status,
                 to_status=to_status))
             await session.commit()
+        return True
 
     async def _mark_failed(self, instance_id: uuid.UUID, step_name: str | None,
                            message: str) -> None:
         async with self._sessionmaker() as session:
-            instance = await session.get(ProcessInstance, instance_id)
+            # `with_for_update` + chequeo de estado: este es el método que escribió las tres
+            # transiciones `IN_PROGRESS → FAILED` del mismo expediente cuando tres réplicas lo
+            # ejecutaban en paralelo. Una instancia ya fallada no vuelve a fallar, y el que
+            # llega segundo no tiene nada que registrar.
+            instance = await session.get(ProcessInstance, instance_id, with_for_update=True)
             if instance is None:
                 return
+            if instance.status in ("FAILED", "COMPLETED", "COMPENSATED"):
+                log.warning("fallo_descartado_instancia_ya_terminal",
+                            instance_id=str(instance_id), estado=instance.status)
+                return
             flow_name = instance.flow_name
+            estado_previo = instance.status
             instance.status = "FAILED"
             instance.error = {"step": step_name, "message": message}
             session.add(InstanceTransition(
-                instance_id=instance_id, from_status="IN_PROGRESS",
+                instance_id=instance_id, from_status=estado_previo,
                 to_status="FAILED", step_name=step_name,
                 step_output={"error": message}))
             await session.commit()

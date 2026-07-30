@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     # human_tasks). Es una agregación sobre el working set de `process_instances`, no sobre
     # toda la historia. Prometheus scrapea cada 15 s: bajar de eso no agrega resolución.
     business_metrics_interval: int = 30
+    # Segundos que vale el derecho a ejecutar una instancia. El dueño lo renueva mientras
+    # trabaja; si el proceso muere, otra réplica puede tomarla recién cuando vence. Bajarlo
+    # acelera la recuperación tras una caída y sube el riesgo de que una renovación demorada
+    # (GC, DB lenta) deje que otro se la lleve; subirlo, al revés.
+    instance_lease_seconds: int = 60
     events_exchange: str = "teleflow.domain.events"
 
     # Bus de eventos: reintentos antes de mandar el evento a la DLQ (<queue>.dlq).

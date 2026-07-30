@@ -70,6 +70,18 @@ class ProcessInstance(Base):
     context: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
     current_step: Mapped[str | None] = mapped_column(String(200), nullable=True)
     error: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
+    # Propiedad de la instancia mientras está en vuelo: quién la ejecuta y hasta cuándo vale
+    # ese derecho. Sin esto, cada réplica del executor recuperaba al arrancar TODAS las
+    # instancias en vuelo y las ejecutaba en paralelo — medido con 3 réplicas: el mismo step
+    # corrido 3 veces y tres transiciones a FAILED del mismo expediente.
+    #
+    # El vencimiento es lo que hace correcta la recuperación tras una caída real: un proceso
+    # muerto deja de renovar y otra réplica puede tomar el trabajo. Sin vencimiento, un pod que
+    # muere deja su expediente trabado para siempre.
+    driven_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
