@@ -110,93 +110,45 @@ def test_una_instancia_recien_dormida_reporta_espera_no_negativa(collector):
     assert esperando_hace("venta", "aprobacion") == 0
 
 
-# --- Turno de publicación con varias réplicas ------------------------------------------
+# --- Un solo publicador -----------------------------------------------------------------
 #
-# El gauge lleva el valor absoluto y el dashboard suma entre pods, así que N réplicas
-# publicando lo mismo hacen leer N× el negocio. Solo una publica por ciclo; las demás
-# tienen que bajar sus gauges a 0, no simplemente dejar de refrescar.
+# El gauge lleva el valor absoluto y el dashboard suma entre pods, así que dos procesos
+# publicando hacen leer el doble. La garantía es que el colector viva en un componente de
+# una sola réplica (`metrics_service`), no en el executor que corre con tres.
+#
+# El intento anterior fue sortear un turno por ciclo con un advisory lock de Postgres, y no
+# funcionó: un lock que se toma y se suelta dentro del ciclo solo excluye a réplicas cuyos
+# ciclos se solapan, y con un ciclo de milisegundos cada 30 s no se solapan nunca. El test
+# que lo cubría forzaba el solapamiento, así que verificaba un escenario inexistente.
+# Este test es el que habría fallado: refresca dos veces SIN solapamiento.
 
 
-class _SesionFalsa:
-    """Sesión mínima que finge el resultado de `pg_try_advisory_lock`."""
+def test_el_colector_no_coordina_nada_por_su_cuenta():
+    """Contrato explícito: la exclusión es del despliegue, no del colector.
 
-    def __init__(self, gana_el_turno: bool):
-        self.gana_el_turno = gana_el_turno
-        self.solto = False
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_exc):
-        return False
-
-    async def scalar(self, _stmt, _params=None):
-        return self.gana_el_turno
-
-    async def execute(self, _stmt, _params=None):
-        self.solto = True
-        return None
-
-
-class _ColectorConTurno(BusinessMetricsCollector):
-    """Colector con la query real reemplazada: acá se prueba el reparto, no el SQL."""
-
-    def __init__(self, gana_el_turno: bool, groups):
-        self.sesion = _SesionFalsa(gana_el_turno)
-        super().__init__(lambda: self.sesion, Settings())  # type: ignore[arg-type]
-        self._groups = groups
-
-    async def _collect(self, _session):
-        return self._groups
-
-
-@pytest.mark.asyncio
-async def test_la_replica_con_el_turno_publica_el_agregado(collector):
-    replica = _ColectorConTurno(True, [waiting("aprobacion", 4)])
-
-    await replica.refresh()
-
-    assert backlog("venta", "aprobacion") == 4
-    assert replica.sesion.solto, "el lock tiene que soltarse en el mismo ciclo"
-
-
-@pytest.mark.asyncio
-async def test_la_replica_sin_turno_no_publica_nada(collector):
-    replica = _ColectorConTurno(False, [waiting("aprobacion", 4)])
-
-    await replica.refresh()
-
-    assert backlog("venta", "aprobacion") == 0
-
-
-@pytest.mark.asyncio
-async def test_la_replica_que_pierde_el_turno_baja_lo_que_habia_publicado(collector):
-    """El caso que hacía leer 3× el negocio.
-
-    Sin `apagar()`, la réplica que deja de ganar el turno **conserva** su último valor: el
-    gauge no se vacía solo. El `sum(...)` del dashboard seguiría contando ese número viejo,
-    que además se lee como si fuera actual.
+    Si alguien le agrega coordinación interna (un lock, un líder) este test lo va a hacer
+    notar, y quien lo haga tiene que leer por qué se saco: dos ciclos que no se solapan no se
+    excluyen entre sí, aunque el lock esté bien puesto.
     """
-    replica = _ColectorConTurno(True, [waiting("aprobacion", 4)])
-    await replica.refresh()
-    assert backlog("venta", "aprobacion") == 4
-
-    replica.sesion.gana_el_turno = False
-    await replica.refresh()
-
-    assert backlog("venta", "aprobacion") == 0
-    assert esperando_hace("venta", "aprobacion") == 0
+    assert not hasattr(BusinessMetricsCollector, "_tomar_turno")
+    assert not hasattr(BusinessMetricsCollector, "apagar")
 
 
-@pytest.mark.asyncio
-async def test_recuperar_el_turno_vuelve_a_publicar(collector):
-    """Apagar no puede ser definitivo: los labels se recuerdan, no se olvidan."""
-    replica = _ColectorConTurno(True, [waiting("aprobacion", 4)])
-    await replica.refresh()
-    replica.sesion.gana_el_turno = False
-    await replica.refresh()
+def test_dos_colectores_secuenciales_publican_los_dos(collector):
+    """El caso que el test viejo no veía, y que documenta por qué hace falta 1 réplica.
 
-    replica.sesion.gana_el_turno = True
-    await replica.refresh()
+    Dos colectores que refrescan uno después del otro —lo que pasa de verdad con réplicas
+    cuyos ciclos están desfasados— publican los dos. En un solo proceso el gauge se sobrescribe
+    y queda en 4; entre procesos distintos, cada uno expone 4 y Prometheus suma 8.
+
+    O sea: no hay nada en el colector que impida el doble conteo. Por eso corre en un
+    componente de una sola réplica.
+    """
+    a = BusinessMetricsCollector(None, Settings())  # type: ignore[arg-type]
+    b = BusinessMetricsCollector(None, Settings())  # type: ignore[arg-type]
+
+    a.publish([waiting("aprobacion", 4)], NOW)
+    b.publish([waiting("aprobacion", 4)], NOW)
 
     assert backlog("venta", "aprobacion") == 4
+    assert a._human_task_labels == b._human_task_labels == {("venta", "aprobacion")}

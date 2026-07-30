@@ -59,6 +59,15 @@ services:
     port: 8004
     replicas: 1
     module: teleflow.composer_service.main:app
+  # NO ESCALAR. Publica los gauges de negocio, que llevan el valor absoluto, y el dashboard suma
+  # entre pods: con 2 réplicas todo número de negocio se lee al doble, sin que nada falle ni se
+  # loguee. Estuvo dentro del executor (3 réplicas) y por eso se leía 3×. La exclusión es
+  # topológica a propósito — se intentó coordinar por advisory lock y no alcanzó, porque dos
+  # ciclos que no se solapan en el tiempo no se excluyen entre sí.
+  metrics-service:
+    port: 8005
+    replicas: 1
+    module: teleflow.metrics_service.main:app
 
 # Cómo se entra al gateway desde fuera del cluster. La doc (§10.2) dice "detrás de
 # Ingress/LoadBalancer" y el chart no tenía ninguno de los dos: era `type: LoadBalancer` fijo,

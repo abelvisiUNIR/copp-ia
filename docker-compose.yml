@@ -124,6 +124,21 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Publica los gauges de negocio (backlog de human_tasks, instancias vivas). Va aparte del
+  # executor porque **tiene que correr en un solo proceso**: los gauges llevan el valor absoluto
+  # y el dashboard suma entre pods, así que dos procesos publicando hacen leer el doble. Con el
+  # colector dentro del executor y 3 réplicas en Kubernetes, todo número de negocio se leía 3×.
+  # No escalar este servicio.
+  metrics-service:
+    build: .
+    command: uvicorn teleflow.metrics_service.main:app --host 0.0.0.0 --port 8005
+    environment:
+      <<: *python-env
+      SERVICE_NAME: metrics-service
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   api-gateway:
     build: .
     command: uvicorn teleflow.gateway.main:app --host 0.0.0.0 --port 8000

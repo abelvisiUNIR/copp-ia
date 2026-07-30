@@ -11,13 +11,11 @@ los cuenta `teleflow_instances_total` en el momento en que ocurren, y agregarlos
 significaría escanear toda la historia de la tabla cada ciclo para reconstruir un número que
 solo crece.
 
-**Con varias réplicas del executor, solo una publica por ciclo.** El gauge lleva el valor
-absoluto y el dashboard suma entre pods, así que N réplicas publicando lo mismo hacían leer N×
-todo número de negocio. El turno se sortea con un advisory lock de Postgres, y las réplicas que
-no lo obtienen **bajan sus gauges a 0** en vez de dejar de refrescar — un gauge conserva su
-último valor, así que quedarse quieto mantendría el `sum` inflado con un dato viejo que parece
-actual. Ver el ADR de la wiki "quién publica los gauges de negocio cuando el executor tiene
-varias réplicas".
+**Este colector tiene que correr en un solo proceso.** El gauge lleva el valor absoluto y el
+dashboard suma entre pods, así que N procesos publicando lo mismo hacen leer N× todo número de
+negocio. Por eso vive en `metrics_service`, que se despliega con **una sola réplica**, y no en el
+executor, que corre con tres. La garantía es topológica y a propósito: se intentó coordinar por
+advisory lock y no alcanzó (el detalle está en `metrics_service/main.py`).
 """
 from __future__ import annotations
 
@@ -26,7 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from prometheus_client import Gauge
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from teleflow.common.config import Settings
@@ -41,11 +39,6 @@ ACTIVE_STATUSES = ("TRIGGERED", "IN_PROGRESS", "RETRYING", "WAITING_SIGNAL")
 # Estado en el que la instancia duerme esperando la señal de un human_task (engine.py).
 WAITING_SIGNAL = "WAITING_SIGNAL"
 
-# Clave del advisory lock que decide qué réplica publica el ciclo. Es un número fijo y arbitrario;
-# lo único que importa es que no lo use otra cosa contra la misma base. Los advisory locks viven
-# en un espacio global del cluster de Postgres, no por tabla, así que conviene dejarlo acá
-# nombrado y no repetirlo suelto.
-LOCK_METRICAS_NEGOCIO = 8474137001
 
 INSTANCES_CURRENT = Gauge(
     "teleflow_instances_current",
@@ -120,55 +113,9 @@ class BusinessMetricsCollector:
                 log.error("business_metrics_error", error=str(exc))
 
     async def refresh(self) -> None:
-        """Publica el ciclo si le toca el turno; si no, apaga sus propios gauges.
-
-        El lock y la query van en la **misma** sesión a propósito: un advisory lock de Postgres
-        es de la sesión que lo tomó, así que pedirlo en una conexión y consultar en otra no
-        garantizaría nada.
-        """
         async with self._sessionmaker() as session:
-            if not await self._tomar_turno(session):
-                self.apagar()
-                return
-            try:
-                groups = await self._collect(session)
-            finally:
-                await self._soltar_turno(session)
+            groups = await self._collect(session)
         self.publish(groups, datetime.now(timezone.utc))
-
-    async def _tomar_turno(self, session: AsyncSession) -> bool:
-        """`True` si esta réplica es la que publica este ciclo.
-
-        `pg_try_advisory_lock` no espera: la réplica que no lo consigue sigue de largo y vuelve a
-        intentar el ciclo que viene. No hay líder permanente, así que tampoco hay que detectar
-        caídas: si la que tenía el turno murió, otra lo toma en el próximo intervalo.
-        """
-        tomado = await session.scalar(
-            text("SELECT pg_try_advisory_lock(:clave)"), {"clave": LOCK_METRICAS_NEGOCIO}
-        )
-        return bool(tomado)
-
-    async def _soltar_turno(self, session: AsyncSession) -> None:
-        await session.execute(
-            text("SELECT pg_advisory_unlock(:clave)"), {"clave": LOCK_METRICAS_NEGOCIO}
-        )
-
-    def apagar(self) -> None:
-        """Baja a 0 todo lo que esta réplica haya publicado alguna vez.
-
-        Se llama cuando el turno le tocó a otra. No alcanza con no refrescar: el gauge conserva
-        el último valor de cada combinación de labels, así que esta réplica seguiría exportando
-        el número del ciclo anterior y el `sum(...)` del dashboard seguiría inflado — con el
-        agravante de que un dato viejo se lee como actual.
-
-        Los labels se **recuerdan**, no se olvidan: si esta réplica vuelve a ganar el turno,
-        tiene que poder bajar a 0 los que dejen de aparecer.
-        """
-        for labels in self._instance_labels:
-            INSTANCES_CURRENT.labels(*labels).set(0)
-        for labels in self._human_task_labels:
-            HUMAN_TASK_BACKLOG.labels(*labels).set(0)
-            HUMAN_TASK_OLDEST_SECONDS.labels(*labels).set(0)
 
     async def _collect(self, session: AsyncSession) -> list[InstanceGroup]:
         """Un solo GROUP BY sobre el working set (los estados vivos usan el índice de status)."""

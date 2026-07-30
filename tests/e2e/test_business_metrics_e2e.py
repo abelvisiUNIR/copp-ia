@@ -47,6 +47,19 @@ async def _query_scalar(query: str, tries: int = 30, delay: float = 3.0) -> floa
     return ultimo
 
 
+async def _query_labels(metric: str, label: str, tries: int = 30,
+                        delay: float = 3.0) -> set[str]:
+    """Valores distintos de `label` para `metric`, esperando el ciclo del colector y el scrape."""
+    async with httpx.AsyncClient(base_url=PROMETHEUS, timeout=10.0) as prom:
+        for _ in range(tries):
+            r = await prom.get("/api/v1/query", params={"query": metric})
+            r.raise_for_status()
+            result = r.json()["data"]["result"]
+            if result:
+                return {serie["metric"].get(label, "?") for serie in result}
+            await asyncio.sleep(delay)
+    return set()
+
 async def test_una_instancia_dormida_aparece_en_el_backlog_de_human_tasks(
     prometheus_up: None,
     client: httpx.AsyncClient,
@@ -99,76 +112,38 @@ async def test_las_instancias_vivas_se_publican_por_estado(
     await poll_status(instance_id, "COMPLETED")
 
 
-# --- El turno de publicación, contra Postgres real ---------------------------------------
-
-_GUION_DOS_REPLICAS = """
-import asyncio
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-from teleflow.common.config import Settings
-from teleflow.executor_service.business_metrics import (
-    BusinessMetricsCollector, InstanceGroup)
-
-ajustes = Settings()
+# --- Un solo publicador ------------------------------------------------------------------
 
 
-async def main():
-    # Dos engines separados = dos conexiones distintas, como dos réplicas del executor.
-    motores = [create_async_engine(ajustes.database_url) for _ in range(2)]
-    replicas = [BusinessMetricsCollector(async_sessionmaker(m), ajustes) for m in motores]
+async def test_solo_un_proceso_publica_los_gauges_de_negocio(
+    prometheus_up: None,
+    client: httpx.AsyncClient,
+    poll_status: Callable[..., Awaitable[dict[str, Any]]],
+) -> None:
+    """El invariante que hace correctos los `sum(...)` del dashboard.
 
-    turnos = []
+    Los gauges llevan el valor absoluto, así que si dos procesos los publican, cada panel que
+    suma entre instancias lee el doble — sin que nada falle ni se loguee. La garantía es que el
+    colector viva en `metrics-service`, que corre en una sola réplica.
 
-    def espiar(indice):
-        async def _collect(_session):
-            # Solo llega acá quien ganó el turno. La espera fuerza el solapamiento: sin ella
-            # la primera podría soltar el lock antes de que la segunda lo pida.
-            turnos.append(indice)
-            await asyncio.sleep(0.5)
-            return [InstanceGroup("venta", "WAITING_SIGNAL", "aprobacion", 7, None)]
-        return _collect
+    Se cuenta cuántas instancias de Prometheus exponen la métrica, que es exactamente lo que
+    estaba mal: con el colector dentro del executor y 3 réplicas, eran 3.
 
-    for i, r in enumerate(replicas):
-        r._collect = espiar(i)
-
-    await asyncio.gather(*(r.refresh() for r in replicas))
-
-    print("TURNOS=%d" % len(turnos))
-    for m in motores:
-        await m.dispose()
-
-
-asyncio.run(main())
-"""
-
-
-def test_solo_una_replica_toma_el_turno_del_ciclo(gateway_up: None) -> None:
-    """El lock de Postgres tiene que excluir de verdad, no solo en un doble.
-
-    Se corre **dentro** del executor porque Postgres no se publica al host (la entrada única
-    es el gateway). Dos colectores con conexiones distintas refrescan a la vez y solo uno tiene
-    que llegar a leer la DB.
-
-    **Lo que se mira es cuántos tomaron el turno, no el valor del gauge** — y esa distinción
-    costó un test vacuo: la primera versión afirmaba que el gauge quedaba en 7 y no en 14, pero
-    los dos colectores comparten el objeto Gauge del proceso, así que dos `set(7)` dan 7 igual
-    y el test pasaba **con el bug puesto** (verificado por mutación). La multiplicación real
-    ocurre entre procesos distintos, cada uno con su registry, sumados por Prometheus: no se
-    puede reproducir dentro de un proceso. Lo que sí se puede verificar acá es el invariante
-    que sostiene el lock, que es exactamente lo que estaba roto.
+    No se afirma que la suma coincida con el backlog real: las otras pruebas de la sesión
+    aprueban y rechazan instancias, así que el número se mueve entre el scrape y la consulta y
+    la afirmación sería intermitente. Lo que no depende del timing es cuántos publican.
     """
-    import subprocess
-    from pathlib import Path
+    r = await client.post("/execute", json={
+        "flow_name": "venta_internet_hogar",
+        "payload": {"cliente_id": "cli-publicador", "producto": "fibra-300"},
+    })
+    assert r.status_code == 202, r.text
+    await poll_status(r.json()["instance_id"], "WAITING_SIGNAL")
 
-    raiz = Path(__file__).resolve().parents[2]
-    if not subprocess.run(["docker", "compose", "ps", "-q", "executor-service"],
-                          cwd=raiz, capture_output=True).stdout.strip():
-        pytest.skip("docker compose no disponible: el turno se prueba contra Postgres real")
+    targets = await _query_labels("teleflow_human_task_backlog", "instance")
 
-    r = subprocess.run(
-        ["docker", "compose", "exec", "-T", "executor-service", "python", "-c",
-         _GUION_DOS_REPLICAS],
-        cwd=raiz, capture_output=True, timeout=180)
-    salida = r.stdout.decode(errors="replace")
-    assert r.returncode == 0, r.stderr.decode(errors="replace")
-    assert "TURNOS=1" in salida, f"esperaba un solo publicador por ciclo, salió: {salida}"
+    assert targets == {"metrics-service:8005"}, (
+        f"los gauges de negocio los publica {targets or 'nadie'}. Tienen que venir de un solo "
+        f"proceso: llevan el valor absoluto y cada panel que hace sum() entre instancias los "
+        f"multiplicaría."
+    )
