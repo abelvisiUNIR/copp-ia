@@ -1,0 +1,37 @@
+# Plantilla: el entrypoint de la imagen nginx corre envsubst sobre /etc/nginx/templates/*.template
+# y deja el resultado en /etc/nginx/conf.d/. Antes esto era un nginx.conf fijo con
+# `proxy_pass http://api-gateway:8000/` horneado en la imagen, lo que ataba el bundle al nombre
+# que el servicio tiene en docker-compose: en Kubernetes, donde el Service lleva el prefijo del
+# release, nginx no arrancaba.
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / {
+        try_files $uri /index.html;
+    }
+
+    # La UI habla con el gateway a través de este proxy.
+    #
+    # El upstream va en una variable a propósito: con el host escrito literal en `proxy_pass`,
+    # nginx lo resuelve al arrancar y **muere** si todavía no resuelve
+    # ("host not found in upstream", emerg). O sea la UI no levantaba si el gateway no estaba
+    # arriba primero. Con una variable, la resolución se hace por request y un gateway caído da
+    # 502 en vez de tumbar el contenedor.
+    #
+    # NGINX_LOCAL_RESOLVERS lo exporta el propio entrypoint de la imagen
+    # (15-local-resolvers.envsh) leyendo /etc/resolv.conf, así que sirve igual en Docker y en
+    # Kubernetes sin hardcodear un DNS.
+    resolver ${NGINX_LOCAL_RESOLVERS} valid=10s;
+
+    location /api/ {
+        set $upstream ${GATEWAY_ORIGIN};
+        rewrite ^/api/(.*)$ /$1 break;
+        proxy_pass $upstream;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
