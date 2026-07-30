@@ -72,6 +72,16 @@ curl -X POST localhost:8000/relations/inscripcion/{rid}/transition $H -d '{"via"
 curl localhost:8000/entities/nino/{id}/360 $H
 ```
 
+El paso 3 dispara `activacion_acceso_plataforma`, que **queda en FAILED** en el step
+`crear_credenciales_lms`: ese step llama a un LMS real y el `.env.example` no trae su URL
+(`${env.LMS_URL}`), porque el repo no puede traer un endpoint que no existe. El error dice qué
+variable falta y falla en el primer intento, sin gastar reintentos. Todo lo demás del ejemplo
+—entities, relations, rules, vista 360, durable sleep— funciona sin configurar nada.
+
+Para verlo completo, apuntá `LMS_URL` a un endpoint que responda 2xx a `POST /api/credentials`.
+Ojo: apuntarla a un host que **no resuelve** es peor que dejarla sin definir, porque un error de
+red es transitorio y el step gasta todos sus reintentos con backoff antes de fallar.
+
 ### Durable sleep (human_task)
 
 ```bash
