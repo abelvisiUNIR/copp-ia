@@ -118,10 +118,17 @@ detectar que alguien se le adelantó, y hoy ni lo intenta.
 
 ## Consequences
 - **Necesita migración de Alembic** (dos columnas). Es la sexta; el patrón está.
-- **Hay que verificar con el mismo experimento que lo encontró**, no con un doble: instancia en
-  vuelo + `rollout restart` con 3 réplicas, y afirmar **un solo** `recover_in_flight`, **21**
-  intentos y **una sola** transición a `FAILED`. La sonda ya existe (queda en el scratchpad, no
-  en el repo) y el criterio de éxito son números concretos, no "parece andar".
+- **Implementado y verificado con el mismo experimento que lo encontró (2026-07-30).** Instancia
+  en vuelo + `rollout restart` con 3 réplicas, y los tres números dieron exacto:
+
+  | | antes | después |
+  |---|---|---|
+  | pods que recuperaron la instancia | 3 | **1** |
+  | intentos del step, sumando los 3 pods | 63 | **21** |
+  | transiciones `IN_PROGRESS → FAILED` | 3 | **1** |
+
+  El lease quedó tomado con el nombre del pod (`teleflow-executor-service-...-8v7zv:1`) y en
+  `NADIE` al terminar el drive. Total de transiciones: 3, las que corresponden.
 - **Y hay que probar el caso que el lease habilita:** matar el pod que tiene una instancia y
   verificar que otra la toma **después** del vencimiento y no antes. Eso es lo que distingue un
   lease de un candado, y es la parte que un test apurado se saltearía.
