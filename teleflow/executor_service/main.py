@@ -26,7 +26,6 @@ from teleflow.common.logging import setup_logging
 from teleflow.common.models import InstanceTransition, ProcessInstance
 from teleflow.common.observability import setup_observability
 from teleflow.dsl.parser import get_parser
-from teleflow.executor_service.business_metrics import BusinessMetricsCollector
 from teleflow.executor_service.domain import DomainLoader
 from teleflow.executor_service.engine import ExecutionEngine
 from teleflow.executor_service.entities import DomainError, EntityService
@@ -53,7 +52,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                              entity_service, settings)
     rule_engine = RuleEngine(sessionmaker, domain_loader, event_bus, engine, settings)
     view360 = View360Service(sessionmaker, domain_loader)
-    business_metrics = BusinessMetricsCollector(sessionmaker, settings)
 
     try:
         await event_bus.connect()
@@ -61,21 +59,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.warning("rabbitmq_unavailable_at_startup", error=str(exc))
     await engine.start()
     await rule_engine.start()
-    # Primer refresh en el arranque: sin esto el backlog recién aparece en /metrics tras el
-    # primer intervalo, y un executor que reinicia mostraría cero trabajo pendiente mientras
-    # tanto. Si la DB no está lista todavía, el loop lo reintenta solo.
-    try:
-        await business_metrics.refresh()
-    except Exception as exc:
-        log.warning("business_metrics_initial_refresh_failed", error=str(exc))
-    await business_metrics.start()
+    # Los gauges de negocio NO se publican acá: los publica `metrics-service`, que corre con
+    # una sola réplica. Este servicio corre con tres, y los gauges llevan el valor absoluto, así
+    # que publicarlos en cada réplica hacía que el dashboard leyera 3× todo el negocio.
 
     state.update(engine=engine, rule_engine=rule_engine, entities=entity_service,
-                 view360=view360, bus=event_bus, domain=domain_loader,
-                 business_metrics=business_metrics)
+                 view360=view360, bus=event_bus, domain=domain_loader)
     log.info("executor_started", worker_concurrency=settings.worker_concurrency)
     yield
-    await business_metrics.stop()
     await rule_engine.stop()
     await engine.stop()
     await event_bus.close()

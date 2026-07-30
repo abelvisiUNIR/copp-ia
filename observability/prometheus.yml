@@ -12,5 +12,9 @@ scrape_configs:
           - executor-service:8002
           - registry-service:8003
           - composer-service:8004
+          # Publica los gauges de negocio (backlog de human_tasks, instancias vivas). Si falta
+          # acá, los paneles de negocio quedan sin datos y nada lo avisa: el dashboard muestra
+          # "No data", que se lee igual que "no hay trabajo pendiente".
+          - metrics-service:8005
         labels:
           platform: teleflow

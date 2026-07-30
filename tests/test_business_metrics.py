@@ -108,3 +108,47 @@ def test_una_instancia_recien_dormida_reporta_espera_no_negativa(collector):
     collector.publish([futuro], NOW)
 
     assert esperando_hace("venta", "aprobacion") == 0
+
+
+# --- Un solo publicador -----------------------------------------------------------------
+#
+# El gauge lleva el valor absoluto y el dashboard suma entre pods, así que dos procesos
+# publicando hacen leer el doble. La garantía es que el colector viva en un componente de
+# una sola réplica (`metrics_service`), no en el executor que corre con tres.
+#
+# El intento anterior fue sortear un turno por ciclo con un advisory lock de Postgres, y no
+# funcionó: un lock que se toma y se suelta dentro del ciclo solo excluye a réplicas cuyos
+# ciclos se solapan, y con un ciclo de milisegundos cada 30 s no se solapan nunca. El test
+# que lo cubría forzaba el solapamiento, así que verificaba un escenario inexistente.
+# Este test es el que habría fallado: refresca dos veces SIN solapamiento.
+
+
+def test_el_colector_no_coordina_nada_por_su_cuenta():
+    """Contrato explícito: la exclusión es del despliegue, no del colector.
+
+    Si alguien le agrega coordinación interna (un lock, un líder) este test lo va a hacer
+    notar, y quien lo haga tiene que leer por qué se saco: dos ciclos que no se solapan no se
+    excluyen entre sí, aunque el lock esté bien puesto.
+    """
+    assert not hasattr(BusinessMetricsCollector, "_tomar_turno")
+    assert not hasattr(BusinessMetricsCollector, "apagar")
+
+
+def test_dos_colectores_secuenciales_publican_los_dos(collector):
+    """El caso que el test viejo no veía, y que documenta por qué hace falta 1 réplica.
+
+    Dos colectores que refrescan uno después del otro —lo que pasa de verdad con réplicas
+    cuyos ciclos están desfasados— publican los dos. En un solo proceso el gauge se sobrescribe
+    y queda en 4; entre procesos distintos, cada uno expone 4 y Prometheus suma 8.
+
+    O sea: no hay nada en el colector que impida el doble conteo. Por eso corre en un
+    componente de una sola réplica.
+    """
+    a = BusinessMetricsCollector(None, Settings())  # type: ignore[arg-type]
+    b = BusinessMetricsCollector(None, Settings())  # type: ignore[arg-type]
+
+    a.publish([waiting("aprobacion", 4)], NOW)
+    b.publish([waiting("aprobacion", 4)], NOW)
+
+    assert backlog("venta", "aprobacion") == 4
+    assert a._human_task_labels == b._human_task_labels == {("venta", "aprobacion")}

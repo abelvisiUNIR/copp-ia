@@ -7,21 +7,36 @@ uiImage:
   repository: registry.example.com/teleflow/review-ui
   tag: "1.0.0"
 
-apiKeySecret: teleflow-secrets  # debe contener TELEFLOW_API_KEY y LLM_API_KEY
+# Credenciales. Hay que definir UNA de las dos: `apiKey` (el chart crea el Secret) o
+# `existingSecret` (el organismo lo administra por fuera, con las claves TELEFLOW_API_KEY y
+# opcionalmente LLM_API_KEY). Si faltan las dos, el `helm install` falla diciendo el motivo —
+# a propósito: una key por default que funciona deja la instalación arriba y a nadie enterado.
+apiKey: ""
+llmApiKey: ""
+existingSecret: ""
 
+# Dominio del cluster. Solo lo necesita el nginx del review-ui, que resuelve el gateway por
+# FQDN (su `resolver` no aplica la lista `search` de /etc/resolv.conf).
+clusterDomain: cluster.local
+
+# Ni los URLs de Postgres/Redis/RabbitMQ ni los de los servicios entre sí se declaran acá: los
+# deriva `_helpers.tpl` del nombre del release, igual que los nombra cada subchart. Cuando
+# estaban hardcodeados (`teleflow-postgresql`, `http://parser-service:8001`) el chart solo
+# funcionaba si el release se llamaba `teleflow`, y sin decirlo en ninguna parte.
 env:
-  DATABASE_URL: postgresql+asyncpg://teleflow:teleflow@teleflow-postgresql:5432/teleflow
-  REDIS_URL: redis://teleflow-redis-master:6379/0
-  RABBITMQ_URL: amqp://teleflow:teleflow@teleflow-rabbitmq:5672/
-  PARSER_URL: http://parser-service:8001
-  REGISTRY_URL: http://registry-service:8003
-  EXECUTOR_URL: http://executor-service:8002
-  COMPOSER_URL: http://composer-service:8004
-  GATEWAY_URL: http://api-gateway:8000
   LLM_PROVIDER: stub
   WORKER_CONCURRENCY: "10"
 
-# Réplicas según sección 9.1 del documento de arquitectura
+# Solo se usan con el subchart correspondiente en `enabled: false`.
+externalDatabase:
+  host: ""
+externalRedis:
+  host: ""
+externalRabbitmq:
+  host: ""
+
+# Réplicas según la sección 10.2 del documento de arquitectura
+# (docs/teleflow-deployment.typ).
 services:
   api-gateway:
     port: 8000
@@ -44,30 +59,110 @@ services:
     port: 8004
     replicas: 1
     module: teleflow.composer_service.main:app
+  # NO ESCALAR. Publica los gauges de negocio, que llevan el valor absoluto, y el dashboard suma
+  # entre pods: con 2 réplicas todo número de negocio se lee al doble, sin que nada falle ni se
+  # loguee. Estuvo dentro del executor (3 réplicas) y por eso se leía 3×. La exclusión es
+  # topológica a propósito — se intentó coordinar por advisory lock y no alcanzó, porque dos
+  # ciclos que no se solapan en el tiempo no se excluyen entre sí.
+  metrics-service:
+    port: 8005
+    replicas: 1
+    module: teleflow.metrics_service.main:app
+
+# Cómo se entra al gateway desde fuera del cluster. La doc (§10.2) dice "detrás de
+# Ingress/LoadBalancer" y el chart no tenía ninguno de los dos: era `type: LoadBalancer` fijo,
+# que en kind queda `<pending>` para siempre. En local: `kubectl port-forward`.
+gateway:
+  service:
+    type: ClusterIP
+  ingress:
+    enabled: false
+    className: ""
+    host: teleflow.local
+    annotations: {}
+    tls: []
 
 reviewUi:
   enabled: true
   port: 3100
-  replicas: 1
+  replicas: 2
+
+# Observabilidad. El chart trae los **puntos de integración**, no un stack de monitoreo: un
+# organismo con Kubernetes casi siempre ya tiene Prometheus y Grafana, y meterle un segundo le
+# duplica infraestructura y parte las métricas en dos lugares. Un organismo que no tenga nada
+# necesita instalar algo como kube-prometheus-stack aparte — este chart no se lo resuelve.
+observabilidad:
+  # Anotaciones prometheus.io/* en los pods. Inertes si nadie las mira, así que vienen puestas.
+  scrapeAnnotations: true
+  serviceMonitor:
+    # Requiere el CRD del Prometheus Operator: encenderlo sin el operator instalado hace
+    # fallar el install. Por eso no viene puesto.
+    enabled: false
+    interval: 30s
+    # Muchas instalaciones exigen una etiqueta para que su Prometheus adopte el ServiceMonitor
+    # (p. ej. `release: kube-prometheus-stack`). Sin la etiqueta correcta se crea y se ignora.
+    labels: {}
+  dashboards:
+    # ConfigMap con los dashboards, para el sidecar de Grafana. Sin sidecar no molesta, pero
+    # tampoco sirve, así que es opt-in.
+    enabled: false
+    label: grafana_dashboard
+    labelValue: "1"
 
 migrations:
-  enabled: true  # Job alembic upgrade head (hook pre-install/pre-upgrade)
+  enabled: true  # Job `alembic upgrade head` (Job normal, NO hook — ver migrate-job.yaml)
+  # Segundos que un initContainer espera a que Postgres acepte conexiones antes de rendirse.
+  waitForDbSeconds: 120
+  # Segundos que cada servicio espera a que el schema llegue a `head` antes de rendirse.
+  waitForSchemaSeconds: 300
 
-postgresql:
+# Capa de datos. Las imágenes son **las mismas del docker-compose.yml** a propósito: antes esto
+# eran tres subcharts de Bitnami y el compose usaba las oficiales, así que los e2e probaban una
+# capa de datos distinta de la de producción. Si cambia una, cambia la otra.
+#
+# Poner `enabled: false` y llenar el `external*.host` de arriba para usar una base que el
+# organismo ya administra.
+postgres:
   enabled: true
+  image: postgres:16-alpine
   auth:
     username: teleflow
-    password: teleflow
+    password: teleflow      # ← pendiente Fase E: sacarlo de values a un Secret
     database: teleflow
+  persistence:
+    size: 8Gi
+    storageClass: ""        # vacío = la StorageClass default del cluster
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
 
 redis:
   enabled: true
-  architecture: standalone
-  auth:
-    enabled: false
+  image: redis:7-alpine
+  # Sin `persistence`: es cache y pub/sub, el durable sleep vive en Postgres (ADR-002).
+  # Igual que en el compose, que tampoco le da volumen.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
 
 rabbitmq:
   enabled: true
+  image: rabbitmq:3.13-management-alpine
   auth:
     username: teleflow
-    password: teleflow
+    password: teleflow      # ← pendiente Fase E: sacarlo de values a un Secret
+  persistence:
+    size: 8Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi

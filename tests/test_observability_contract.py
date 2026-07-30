@@ -1,8 +1,14 @@
 """Contrato entre los dashboards de Grafana y las métricas que el código publica.
 
 Un dashboard roto no falla nada: Grafana muestra el panel vacío y parece que no hay
-trabajo pendiente. Estos tests fijan las dos formas en que se rompía en silencio —
-métricas que no existen, y provisión que el volumen de Grafana tapaba.
+trabajo pendiente. Estos tests fijan las formas en que se rompía en silencio — métricas que no
+existen, provisión que el volumen de Grafana tapaba, y ahora también que haya **dos copias** de
+los dashboards desincronizándose.
+
+Los dashboards viven dentro del chart (`helm/teleflow/dashboards/`) y no en `observability/`
+porque Helm solo puede leer archivos de adentro del chart: si estuvieran afuera, el chart
+necesitaría su propia copia. Una sola fuente, dos consumidores — la imagen de Grafana del
+compose y el ConfigMap que genera el chart.
 """
 import json
 import re
@@ -11,7 +17,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-DASHBOARDS = ROOT / "observability" / "grafana" / "dashboards"
+DASHBOARDS = ROOT / "helm" / "teleflow" / "dashboards"
+CONFIGMAP = ROOT / "helm" / "teleflow" / "templates" / "observabilidad.yaml"
 PROVIDER = ROOT / "observability" / "grafana" / "provisioning" / "dashboards" / "provider.yml"
 GRAFANA_DOCKERFILE = ROOT / "observability" / "grafana.Dockerfile"
 
@@ -38,7 +45,28 @@ def metricas_usadas(dashboard: Path) -> set[str]:
 
 
 def test_hay_dashboards_versionados():
-    assert dashboards(), "no hay ningún dashboard en observability/grafana/dashboards"
+    assert dashboards(), f"no hay ningún dashboard en {DASHBOARDS}"
+
+
+def test_no_hay_una_segunda_copia_de_los_dashboards():
+    """Dos copias se desincronizan sin que nada avise: el panel que ve el organismo deja de ser
+    el que ve el equipo, y no hay error que lo delate."""
+    assert not (ROOT / "observability" / "grafana" / "dashboards").exists(), (
+        "volvió a aparecer una copia de los dashboards en observability/"
+    )
+
+
+def test_los_dos_consumidores_leen_la_misma_carpeta():
+    """El compose por el COPY del Dockerfile; el cluster por el ConfigMap del chart."""
+    dockerfile = GRAFANA_DOCKERFILE.read_text(encoding="utf-8")
+    plantilla = CONFIGMAP.read_text(encoding="utf-8")
+
+    assert "helm/teleflow/dashboards" in dockerfile, (
+        "la imagen de Grafana del compose dejó de leer los dashboards del chart"
+    )
+    assert 'Files.Glob "dashboards/*.json"' in plantilla, (
+        "el ConfigMap dejó de tomar los dashboards de la carpeta del chart"
+    )
 
 
 @pytest.mark.parametrize("dashboard", dashboards(), ids=lambda p: p.stem)
@@ -79,7 +107,7 @@ def test_la_provision_apunta_a_donde_la_imagen_copia_los_dashboards():
     dockerfile = GRAFANA_DOCKERFILE.read_text(encoding="utf-8")
 
     path = re.search(r"^\s*path:\s*(\S+)", provider, re.MULTILINE)
-    copia = re.search(r"^COPY\s+grafana/dashboards\s+(\S+)", dockerfile, re.MULTILINE)
+    copia = re.search(r"^COPY\s+helm/teleflow/dashboards\s+(\S+)", dockerfile, re.MULTILINE)
 
     assert path and copia, "no se pudo leer el path de provisión o el COPY de la imagen"
     assert path.group(1) == copia.group(1), (

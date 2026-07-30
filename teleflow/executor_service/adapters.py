@@ -18,7 +18,11 @@ from typing import Any, Mapping
 import httpx
 
 from teleflow.common.logging import get_logger
-from teleflow.common.retry import RETRYABLE_STATUS, is_retryable_status
+from teleflow.common.retry import (
+    RETRYABLE_STATUS,
+    is_retryable_status,
+    is_retryable_transport_error,
+)
 from teleflow.dsl.ast_nodes import IntegrationDef, StepDef
 from teleflow.dsl.evaluator import evaluate
 
@@ -38,13 +42,46 @@ class RetryableStepError(StepExecutionError):
 
 # El criterio transitorio/permanente vive en `common.retry`: lo comparten estos adapters y
 # el composer. Se re-exporta acá para no romper los imports existentes.
-__all__ = ["RETRYABLE_STATUS", "is_retryable_status"]
+__all__ = ["RETRYABLE_STATUS", "is_retryable_status", "is_retryable_transport_error"]
 
 
 def resolve_env(value: Any) -> Any:
-    if isinstance(value, str):
-        return _ENV_RE.sub(lambda m: os.environ.get(m.group(1), ""), value)
-    return value
+    """Resuelve `${env.VAR}`, y **falla si la variable no está**.
+
+    Antes una variable faltante se reemplazaba por cadena vacía. Eso deja pasar el deploy y el
+    fallo aparece mucho después, en el peor lugar: con `base_url: "${env.LMS_URL}"` sin definir,
+    el request sale a `/api/credentials` sin protocolo y el step muere con un
+    `UnsupportedProtocol` que no nombra la variable. Medido: un expediente real quedó FAILED por
+    esto, después de gastar 4 intentos.
+
+    Peor todavía en las credenciales: un `Authorization: Bearer ${env.TOKEN}` sin TOKEN mandaba
+    el header vacío y la integración devolvía 401 — o, si el otro lado es permisivo, salía bien
+    sin autenticar.
+
+    Es `StepExecutionError` y no `RetryableStepError` a propósito: falta configuración, y ningún
+    reintento va a crearla.
+    """
+    if not isinstance(value, str):
+        return value
+    faltantes: list[str] = []
+
+    def _sub(match: re.Match[str]) -> str:
+        nombre = match.group(1)
+        # Vacía cuenta como faltante: `LMS_URL=` en el .env produce exactamente el mismo fallo
+        # que no declararla, y esconderlo sería el mismo error con otra cara.
+        resuelto = os.environ.get(nombre) or ""
+        if not resuelto:
+            faltantes.append(nombre)
+        return resuelto
+
+    salida = _ENV_RE.sub(_sub, value)
+    if faltantes:
+        nombres = ", ".join(dict.fromkeys(faltantes))
+        raise StepExecutionError(
+            f"config: falta(n) la(s) variable(s) de entorno {nombres} que el flow referencia "
+            f"como ${{env.{faltantes[0]}}}. Definirla(s) en el entorno del executor."
+        )
+    return salida
 
 
 def render_template(template: str, ctx: Mapping[str, Any]) -> str:
@@ -100,10 +137,14 @@ async def _run_rest(step: StepDef, integration: IntegrationDef,
                 method, path, json=payload if method not in ("GET", "DELETE") else None,
                 params=payload if method == "GET" else None, headers=headers,
             )
-    except httpx.HTTPError as exc:  # timeout, DNS, conexión rechazada, TLS
-        raise RetryableStepError(
-            f"step.{step.name}: {method} {base_url}{path} → {type(exc).__name__}: {exc}"
-        ) from exc
+    except httpx.HTTPError as exc:
+        # `httpx.HTTPError` es la clase base: cubre lo transitorio (timeout, DNS, conexión
+        # rechazada, TLS) **y** lo que nunca va a andar (URL sin protocolo, URL inválida). Antes
+        # todo caía como transitorio y un error de config gastaba los reintentos completos.
+        mensaje = f"step.{step.name}: {method} {base_url}{path} → {type(exc).__name__}: {exc}"
+        if is_retryable_transport_error(exc):
+            raise RetryableStepError(mensaje) from exc
+        raise StepExecutionError(mensaje) from exc
 
     if response.status_code >= 400:
         message = (f"step.{step.name}: {method} {base_url}{path} → "
@@ -224,8 +265,10 @@ async def _send_sms(step: StepDef, integration: IntegrationDef,
                 base_url, json={"to": recipient, "message": body}, headers=headers
             )
     except httpx.HTTPError as exc:
-        raise RetryableStepError(
-            f"step.{step.name}: SMS gateway → {type(exc).__name__}: {exc}") from exc
+        mensaje = f"step.{step.name}: SMS gateway → {type(exc).__name__}: {exc}"
+        if is_retryable_transport_error(exc):
+            raise RetryableStepError(mensaje) from exc
+        raise StepExecutionError(mensaje) from exc
 
     if response.status_code >= 400:
         message = f"step.{step.name}: SMS gateway → {response.status_code}"

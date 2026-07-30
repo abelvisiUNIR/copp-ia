@@ -47,6 +47,19 @@ async def _query_scalar(query: str, tries: int = 30, delay: float = 3.0) -> floa
     return ultimo
 
 
+async def _query_labels(metric: str, label: str, tries: int = 30,
+                        delay: float = 3.0) -> set[str]:
+    """Valores distintos de `label` para `metric`, esperando el ciclo del colector y el scrape."""
+    async with httpx.AsyncClient(base_url=PROMETHEUS, timeout=10.0) as prom:
+        for _ in range(tries):
+            r = await prom.get("/api/v1/query", params={"query": metric})
+            r.raise_for_status()
+            result = r.json()["data"]["result"]
+            if result:
+                return {serie["metric"].get(label, "?") for serie in result}
+            await asyncio.sleep(delay)
+    return set()
+
 async def test_una_instancia_dormida_aparece_en_el_backlog_de_human_tasks(
     prometheus_up: None,
     client: httpx.AsyncClient,
@@ -97,3 +110,40 @@ async def test_las_instancias_vivas_se_publican_por_estado(
         "step_name": "aprobacion_gerencia", "signal": "approve", "actor_id": "e2e",
     })
     await poll_status(instance_id, "COMPLETED")
+
+
+# --- Un solo publicador ------------------------------------------------------------------
+
+
+async def test_solo_un_proceso_publica_los_gauges_de_negocio(
+    prometheus_up: None,
+    client: httpx.AsyncClient,
+    poll_status: Callable[..., Awaitable[dict[str, Any]]],
+) -> None:
+    """El invariante que hace correctos los `sum(...)` del dashboard.
+
+    Los gauges llevan el valor absoluto, así que si dos procesos los publican, cada panel que
+    suma entre instancias lee el doble — sin que nada falle ni se loguee. La garantía es que el
+    colector viva en `metrics-service`, que corre en una sola réplica.
+
+    Se cuenta cuántas instancias de Prometheus exponen la métrica, que es exactamente lo que
+    estaba mal: con el colector dentro del executor y 3 réplicas, eran 3.
+
+    No se afirma que la suma coincida con el backlog real: las otras pruebas de la sesión
+    aprueban y rechazan instancias, así que el número se mueve entre el scrape y la consulta y
+    la afirmación sería intermitente. Lo que no depende del timing es cuántos publican.
+    """
+    r = await client.post("/execute", json={
+        "flow_name": "venta_internet_hogar",
+        "payload": {"cliente_id": "cli-publicador", "producto": "fibra-300"},
+    })
+    assert r.status_code == 202, r.text
+    await poll_status(r.json()["instance_id"], "WAITING_SIGNAL")
+
+    targets = await _query_labels("teleflow_human_task_backlog", "instance")
+
+    assert targets == {"metrics-service:8005"}, (
+        f"los gauges de negocio los publica {targets or 'nadie'}. Tienen que venir de un solo "
+        f"proceso: llevan el valor absoluto y cada panel que hace sum() entre instancias los "
+        f"multiplicaría."
+    )

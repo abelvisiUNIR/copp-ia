@@ -12,6 +12,12 @@ tags: [adr, observabilidad, prometheus, grafana, executor, negocio]
 > durante el work-stream `observabilidad-negocio` (Fase D). **No** es un ADR del arquitecto
 > (los suyos son ADR-001..005): es una decisión del equipo sobre cómo se mide el negocio.
 
+> **Enmendado el 2026-07-30** por [[2026-07-30-scanner-de-negocio-multi-replica]]: este ADR
+> decidió *qué* se mide y *cómo* se deriva, pero no *quién* lo publica cuando el executor tiene
+> varias réplicas. El scanner corre en cada réplica publicando el valor absoluto y el dashboard
+> suma entre pods, así que con `replicas: 3` todo número se lee **3×**. Lo que sigue vale; la
+> enmienda agrega la elección de publicador.
+
 ## Context
 La doc de arquitectura promete dashboards de negocio con "procesos completados y **backlog de
 human_tasks**" (`docs/TeleFlow-Arquitectura-v1.0.md:123`,

@@ -30,6 +30,9 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "mypy>=1.10",
+    # Solo para tests: permite ejercitar SQL real (rowcount de un UPDATE con WHERE) sin
+    # depender de que Postgres sea alcanzable desde el host, que a propósito no lo es.
+    "aiosqlite>=0.20",
 ]
 
 [project.scripts]

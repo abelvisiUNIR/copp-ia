@@ -10,6 +10,12 @@ Se miden solo los estados **vivos**: los terminales (COMPLETED / FAILED / COMPEN
 los cuenta `teleflow_instances_total` en el momento en que ocurren, y agregarlos acá
 significaría escanear toda la historia de la tabla cada ciclo para reconstruir un número que
 solo crece.
+
+**Este colector tiene que correr en un solo proceso.** El gauge lleva el valor absoluto y el
+dashboard suma entre pods, así que N procesos publicando lo mismo hacen leer N× todo número de
+negocio. Por eso vive en `metrics_service`, que se despliega con **una sola réplica**, y no en el
+executor, que corre con tres. La garantía es topológica y a propósito: se intentó coordinar por
+advisory lock y no alcanzó (el detalle está en `metrics_service/main.py`).
 """
 from __future__ import annotations
 
@@ -32,6 +38,7 @@ ACTIVE_STATUSES = ("TRIGGERED", "IN_PROGRESS", "RETRYING", "WAITING_SIGNAL")
 
 # Estado en el que la instancia duerme esperando la señal de un human_task (engine.py).
 WAITING_SIGNAL = "WAITING_SIGNAL"
+
 
 INSTANCES_CURRENT = Gauge(
     "teleflow_instances_current",
@@ -106,9 +113,11 @@ class BusinessMetricsCollector:
                 log.error("business_metrics_error", error=str(exc))
 
     async def refresh(self) -> None:
-        self.publish(await self._collect(), datetime.now(timezone.utc))
+        async with self._sessionmaker() as session:
+            groups = await self._collect(session)
+        self.publish(groups, datetime.now(timezone.utc))
 
-    async def _collect(self) -> list[InstanceGroup]:
+    async def _collect(self, session: AsyncSession) -> list[InstanceGroup]:
         """Un solo GROUP BY sobre el working set (los estados vivos usan el índice de status)."""
         query = (
             select(
@@ -125,8 +134,7 @@ class BusinessMetricsCollector:
                 ProcessInstance.current_step,
             )
         )
-        async with self._sessionmaker() as session:
-            rows = (await session.execute(query)).all()
+        rows = (await session.execute(query)).all()
         return [
             InstanceGroup(
                 flow_name=row.flow_name,

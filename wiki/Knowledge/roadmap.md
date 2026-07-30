@@ -113,12 +113,39 @@ Combinado y en este orden de madurez:
 - **Doc:** generación semi-automática desde código para frenar el drift.
 
 ### Fase E — Producción (cuando el producto esté estable y de calidad)
-- [ ] Probar Helm charts en k8s local (kind / RKE2); `values` por entorno.
+- [x] **Probar Helm charts en k8s local (hecho 2026-07-30 → [[fase-e-helm-kind]]):** el chart
+  instala sin overrides y ejecuta procesos de negocio en Kubernetes (22 e2e contra el cluster).
+  **No era un ítem de verificación, era uno de reparación:** el chart no se podía instalar
+  —las imágenes de los subcharts de Bitnami fueron retiradas de Docker Hub— y aparecieron **15
+  hallazgos**, tres de ellos bugs de producto y no del chart. Salieron 4 ADRs. `values` por
+  entorno: existe `values-production.yaml`, que la doc usaba en su comando de deploy y **no
+  existía**.
+- [x] **Migraciones Alembic seguras dentro del pipeline de deploy** (mismo work-stream): dejaron
+  de ser un hook de Helm —que se colgaba como `pre-install` y daba deadlock como `post-install`—
+  y son un Job normal con initContainers que esperan a Postgres y al schema en `head`. Efecto
+  bueno: en un upgrade los pods nuevos no arrancan hasta que el schema está migrado, así que el
+  orden "schema primero, código después" lo garantiza el pod y no la ceremonia del deploy.
 - [ ] Secrets fuera de `.env` (k8s Secrets / Vault); rotación de `TELEFLOW_API_KEY`.
+  **Medio hecho:** el chart crea el Secret o consume uno del organismo (`existingSecret`), y sin
+  ninguno de los dos el install **falla diciendo cuál falta**. Sigue pendiente que los passwords
+  de Postgres y RabbitMQ salgan de `values` en texto plano.
 - [ ] Readiness/liveness afinados; HPA del executor; StatefulSets Postgres/Redis/RabbitMQ en HA.
+  **Los StatefulSets ya son propios** (con las imágenes oficiales que usa el compose, así que dev
+  y producción comparten capa de datos). Falta el **HA** que recomienda §10.2: patroni, Sentinel y
+  quorum queues. Los probes existen en todos los servicios.
 - [ ] Runbooks, backup/restore Postgres, disaster recovery, alertas Prometheus.
-- [ ] Migraciones Alembic seguras dentro del pipeline de deploy.
+  Backup/restore ya está ([[estado-durable]]). **Observabilidad: el chart trae los puntos de
+  integración** (anotaciones de scrape, `ServiceMonitor` y ConfigMap de dashboards, opt-in) y se
+  verificó con un Prometheus real descubriendo los 11 pods. Falta escribir las **reglas de
+  alerta** — la primera y más urgente, el `up` de `metrics-service`, que quedó como punto único
+  de fallo de las métricas de negocio.
 - [ ] Hardening: TLS, no exponer servicios internos, revisión de superficie de ataque.
+  El gateway dejó de ser `LoadBalancer` fijo (Service configurable + Ingress opt-in) y la
+  `review-ui` **dejó de publicarse**: era la UI desde la que se aprueba y despliega código, y
+  estaba potencialmente expuesta sin que nadie lo hubiera decidido. TLS sigue pendiente.
+- [ ] **Nuevo, sale del work-stream:** que el pipeline verifique que las imágenes referenciadas
+  **existen**. Una dependencia externa rompió un artefacto que nadie tocó y ni los tests ni el
+  lint lo vieron, porque el fallo ocurre al desplegar.
 - **Criterio de salida:** deploy reproducible por organismo (ADR-005) con checklist verde.
 
 ### Fase F — Futuro / opcional (Fase 4 del arquitecto)

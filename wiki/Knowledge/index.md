@@ -49,10 +49,26 @@ la promoción de uno a otro es deliberada, nunca automática).
 - [[2026-07-25-composer-llm-fallos-explicitos]] — (wiki/composer) sin proveedor real
   configurado el servicio no arranca (nunca cae al `stub` en silencio); el borrador se valida
   contra el parser al componer y se guarda marcado; los errores del LLM se clasifican.
+- [[2026-07-30-capa-de-datos-del-chart]] — (wiki/despliegue) el chart deja los
+  subcharts de Bitnami —cuyas imágenes ya no existen en Docker Hub— y se alinea con las
+  imágenes oficiales que usa el compose, escribiendo los tres StatefulSets.
+- [[2026-07-30-scanner-de-negocio-multi-replica]] — (wiki/observabilidad) enmienda
+  a [[2026-07-24-metricas-de-negocio-gauges]]: con 3 réplicas del executor los gauges se leían
+  3×; el colector se muda a `metrics-service`, de **una sola réplica**. Incluye el error de
+  diseño del primer intento (advisory lock por ciclo) y por qué su test no lo detectaba.
+- [[2026-07-30-propiedad-de-instancia-en-el-executor]] — (wiki/executor) una
+  instancia en vuelo tiene dueño con lease y solo el dueño la ejecuta: `_recover()` corría en las
+  3 réplicas sin reclamar nada y **cada deploy con un expediente en vuelo lo ejecutaba 3 veces**
+  (reproducido: 63 requests donde iban 21, y 3 transiciones a FAILED).
 
 ### concepts
 - [[fallas-silenciosas]] — el patrón que más veces apareció: mecanismos que parecen proteger
-  y avisan sin cortar. Tres casos verificados y las preguntas para detectar el próximo.
+  y avisan sin cortar. **13 casos verificados**, las preguntas para detectar el próximo, y por
+  qué la verificación por mutación **no alcanza** (prueba que el test mira el mecanismo, no que
+  el escenario ocurra en producción).
+- [[supuesto-de-proceso-unico]] — "esto corre en un solo proceso": el supuesto que nadie
+  escribió y apareció **cuatro veces**. Las tres formas de resolverlo (estado compartido, una
+  sola réplica, lease) y por qué elegir mal cuesta caro.
 
 ### investigations
 - [[2026-07-09-validacion-doc-vs-codigo]] — doc vs código: 26/26 tests ✅, mypy strict ❌,

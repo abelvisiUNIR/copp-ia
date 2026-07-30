@@ -1,0 +1,46 @@
+{{/*
+  Entrada externa al gateway.
+
+  La doc de arquitectura (§10.2) dice que el gateway va "detrás de Ingress/LoadBalancer", pero
+  el chart no tenía ninguno de los dos: el Service era `type: LoadBalancer` fijo. Eso deja el
+  Service en `<pending>` para siempre en cualquier cluster sin proveedor de LB (kind, kubeadm
+  pelado), sin que nada lo explique.
+
+  Ahora el tipo de Service es configurable (`gateway.service.type`, ClusterIP por default) y el
+  Ingress es opt-in. En local: `kubectl port-forward svc/<release>-api-gateway 8000:8000`.
+
+  El review-ui no se publica: se accede por port-forward o se agrega otro Ingress cuando haya
+  una decisión de dominio. Antes era LoadBalancer, o sea potencialmente expuesto sin haberlo
+  decidido — la UI desde la que se aprueba y despliega código.
+*/}}
+{{- if .Values.gateway.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-api-gateway
+  labels:
+    {{- include "teleflow.labels" . | nindent 4 }}
+  {{- with .Values.gateway.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.gateway.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.gateway.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ required "gateway.ingress.enabled=true exige gateway.ingress.host" .Values.gateway.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-api-gateway
+                port:
+                  number: {{ (index .Values.services "api-gateway").port }}
+{{- end }}
