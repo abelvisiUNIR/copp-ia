@@ -108,3 +108,95 @@ def test_una_instancia_recien_dormida_reporta_espera_no_negativa(collector):
     collector.publish([futuro], NOW)
 
     assert esperando_hace("venta", "aprobacion") == 0
+
+
+# --- Turno de publicación con varias réplicas ------------------------------------------
+#
+# El gauge lleva el valor absoluto y el dashboard suma entre pods, así que N réplicas
+# publicando lo mismo hacen leer N× el negocio. Solo una publica por ciclo; las demás
+# tienen que bajar sus gauges a 0, no simplemente dejar de refrescar.
+
+
+class _SesionFalsa:
+    """Sesión mínima que finge el resultado de `pg_try_advisory_lock`."""
+
+    def __init__(self, gana_el_turno: bool):
+        self.gana_el_turno = gana_el_turno
+        self.solto = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+    async def scalar(self, _stmt, _params=None):
+        return self.gana_el_turno
+
+    async def execute(self, _stmt, _params=None):
+        self.solto = True
+        return None
+
+
+class _ColectorConTurno(BusinessMetricsCollector):
+    """Colector con la query real reemplazada: acá se prueba el reparto, no el SQL."""
+
+    def __init__(self, gana_el_turno: bool, groups):
+        self.sesion = _SesionFalsa(gana_el_turno)
+        super().__init__(lambda: self.sesion, Settings())  # type: ignore[arg-type]
+        self._groups = groups
+
+    async def _collect(self, _session):
+        return self._groups
+
+
+@pytest.mark.asyncio
+async def test_la_replica_con_el_turno_publica_el_agregado(collector):
+    replica = _ColectorConTurno(True, [waiting("aprobacion", 4)])
+
+    await replica.refresh()
+
+    assert backlog("venta", "aprobacion") == 4
+    assert replica.sesion.solto, "el lock tiene que soltarse en el mismo ciclo"
+
+
+@pytest.mark.asyncio
+async def test_la_replica_sin_turno_no_publica_nada(collector):
+    replica = _ColectorConTurno(False, [waiting("aprobacion", 4)])
+
+    await replica.refresh()
+
+    assert backlog("venta", "aprobacion") == 0
+
+
+@pytest.mark.asyncio
+async def test_la_replica_que_pierde_el_turno_baja_lo_que_habia_publicado(collector):
+    """El caso que hacía leer 3× el negocio.
+
+    Sin `apagar()`, la réplica que deja de ganar el turno **conserva** su último valor: el
+    gauge no se vacía solo. El `sum(...)` del dashboard seguiría contando ese número viejo,
+    que además se lee como si fuera actual.
+    """
+    replica = _ColectorConTurno(True, [waiting("aprobacion", 4)])
+    await replica.refresh()
+    assert backlog("venta", "aprobacion") == 4
+
+    replica.sesion.gana_el_turno = False
+    await replica.refresh()
+
+    assert backlog("venta", "aprobacion") == 0
+    assert esperando_hace("venta", "aprobacion") == 0
+
+
+@pytest.mark.asyncio
+async def test_recuperar_el_turno_vuelve_a_publicar(collector):
+    """Apagar no puede ser definitivo: los labels se recuerdan, no se olvidan."""
+    replica = _ColectorConTurno(True, [waiting("aprobacion", 4)])
+    await replica.refresh()
+    replica.sesion.gana_el_turno = False
+    await replica.refresh()
+
+    replica.sesion.gana_el_turno = True
+    await replica.refresh()
+
+    assert backlog("venta", "aprobacion") == 4

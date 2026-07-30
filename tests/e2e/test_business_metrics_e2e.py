@@ -97,3 +97,78 @@ async def test_las_instancias_vivas_se_publican_por_estado(
         "step_name": "aprobacion_gerencia", "signal": "approve", "actor_id": "e2e",
     })
     await poll_status(instance_id, "COMPLETED")
+
+
+# --- El turno de publicación, contra Postgres real ---------------------------------------
+
+_GUION_DOS_REPLICAS = """
+import asyncio
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from teleflow.common.config import Settings
+from teleflow.executor_service.business_metrics import (
+    BusinessMetricsCollector, InstanceGroup)
+
+ajustes = Settings()
+
+
+async def main():
+    # Dos engines separados = dos conexiones distintas, como dos réplicas del executor.
+    motores = [create_async_engine(ajustes.database_url) for _ in range(2)]
+    replicas = [BusinessMetricsCollector(async_sessionmaker(m), ajustes) for m in motores]
+
+    turnos = []
+
+    def espiar(indice):
+        async def _collect(_session):
+            # Solo llega acá quien ganó el turno. La espera fuerza el solapamiento: sin ella
+            # la primera podría soltar el lock antes de que la segunda lo pida.
+            turnos.append(indice)
+            await asyncio.sleep(0.5)
+            return [InstanceGroup("venta", "WAITING_SIGNAL", "aprobacion", 7, None)]
+        return _collect
+
+    for i, r in enumerate(replicas):
+        r._collect = espiar(i)
+
+    await asyncio.gather(*(r.refresh() for r in replicas))
+
+    print("TURNOS=%d" % len(turnos))
+    for m in motores:
+        await m.dispose()
+
+
+asyncio.run(main())
+"""
+
+
+def test_solo_una_replica_toma_el_turno_del_ciclo(gateway_up: None) -> None:
+    """El lock de Postgres tiene que excluir de verdad, no solo en un doble.
+
+    Se corre **dentro** del executor porque Postgres no se publica al host (la entrada única
+    es el gateway). Dos colectores con conexiones distintas refrescan a la vez y solo uno tiene
+    que llegar a leer la DB.
+
+    **Lo que se mira es cuántos tomaron el turno, no el valor del gauge** — y esa distinción
+    costó un test vacuo: la primera versión afirmaba que el gauge quedaba en 7 y no en 14, pero
+    los dos colectores comparten el objeto Gauge del proceso, así que dos `set(7)` dan 7 igual
+    y el test pasaba **con el bug puesto** (verificado por mutación). La multiplicación real
+    ocurre entre procesos distintos, cada uno con su registry, sumados por Prometheus: no se
+    puede reproducir dentro de un proceso. Lo que sí se puede verificar acá es el invariante
+    que sostiene el lock, que es exactamente lo que estaba roto.
+    """
+    import subprocess
+    from pathlib import Path
+
+    raiz = Path(__file__).resolve().parents[2]
+    if not subprocess.run(["docker", "compose", "ps", "-q", "executor-service"],
+                          cwd=raiz, capture_output=True).stdout.strip():
+        pytest.skip("docker compose no disponible: el turno se prueba contra Postgres real")
+
+    r = subprocess.run(
+        ["docker", "compose", "exec", "-T", "executor-service", "python", "-c",
+         _GUION_DOS_REPLICAS],
+        cwd=raiz, capture_output=True, timeout=180)
+    salida = r.stdout.decode(errors="replace")
+    assert r.returncode == 0, r.stderr.decode(errors="replace")
+    assert "TURNOS=1" in salida, f"esperaba un solo publicador por ciclo, salió: {salida}"
