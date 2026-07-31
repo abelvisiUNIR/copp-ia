@@ -54,24 +54,27 @@ jobs:
       # un nombre de métrica mal escrito pasa CI y no dispara nunca — indistinguible de un
       # sistema sano.
       #
-      # Va en este job y no en `quality` aunque no necesite el stack: el `up --build` de arriba
-      # ya construyó la imagen de Prometheus, que es `FROM prom/prometheus:vX`, así que el base
-      # image **ya está en el daemon** y este `docker run` no hace ningún pull. En `quality`
-      # sí lo hacía, y una corrida se puso roja por un timeout contra registry-1.docker.io con
-      # el código perfecto. Un gate rápido que falla por el registry es peor que uno lento que
-      # no falla — y este repo ya sabe que Docker Hub no es una dependencia confiable (las
-      # imágenes de los subcharts de Bitnami desaparecieron de ahí).
+      # Va en este job y no en `quality` aunque no necesite el stack levantado: corre promtool
+      # desde la **imagen que el `up --build` de arriba acaba de construir**, así que no hay
+      # ningún pull. En `quality` sí lo había, y una corrida se puso roja con exit 125 por un
+      # timeout contra registry-1.docker.io teniendo mypy y los tests en verde. Un gate rápido
+      # que falla por el registry es peor que uno lento que no falla — y este repo ya sabe que
+      # Docker Hub no es una dependencia confiable (las imágenes de los subcharts de Bitnami
+      # desaparecieron de ahí y rompieron un artefacto que nadie había tocado).
       #
-      # La versión sale del Dockerfile para no tener dos que se separen: promtool y el
-      # Prometheus que va a evaluar estas reglas tienen que ser el mismo.
+      # Es la imagen **construida** y no su base `prom/prometheus:vX`: con BuildKit, `compose
+      # build` deja la base en su caché de build y **no** en el image store, así que un
+      # `docker run` sobre ella falla con "No such image" aunque el build haya pasado recién.
+      # Costó una corrida en rojo descubrirlo. La imagen construida, en cambio, tiene que estar
+      # sí o sí — el stack está corriendo con ella.
+      #
+      # Efecto lateral bueno: promtool sale del mismo artefacto que va a evaluar estas reglas
+      # en el compose, así que la versión coincide por construcción y no hay que sincronizarla
+      # con nada.
       - name: Alertas de Prometheus (promtool test rules)
         run: |
-          IMAGEN=$(sed -n 's/^FROM //p' observability/prometheus.Dockerfile)
-          # --pull=never hace cumplir lo de arriba en vez de confiar en ello: si alguien mueve
-          # este paso antes del build, falla al toque diciendo que la imagen no está local, en
-          # lugar de reintroducir el pull en silencio y volverse flaky de a ratos.
-          docker run --rm --pull=never -v "$PWD:/repo" -w /repo/observability \
-            --entrypoint promtool "$IMAGEN" test rules alerts_test.yml
+          docker compose run --rm --no-deps -v "$PWD:/repo" -w /repo/observability \
+            --entrypoint promtool prometheus test rules alerts_test.yml
 
       - name: Esperar readiness del gateway
         run: |
