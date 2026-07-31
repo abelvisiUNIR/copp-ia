@@ -16,6 +16,9 @@
      viene puesto.
   3. Los dashboards como ConfigMap (por default NO): los levanta el sidecar de Grafana buscando
      una etiqueta. Sin sidecar, el ConfigMap no molesta a nadie, pero tampoco sirve.
+  4. `PrometheusRule` con las alertas (por default NO): mismo CRD del Operator que el
+     `ServiceMonitor`, misma razón para no venir puesto. Las reglas salen de `alerts/alerts.yml`,
+     el **mismo archivo** que hornea la imagen de Prometheus del compose.
 
   **Lo que este chart NO resuelve, dicho explícito:** un organismo sin ningún monitoreo sigue
   sin tenerlo. Para ese caso hay que instalar aparte algo como kube-prometheus-stack; está en
@@ -60,5 +63,29 @@ spec:
     - port: http
       path: /metrics
       interval: {{ $.Values.observabilidad.serviceMonitor.interval }}
+      # Estampa la misma etiqueta que ponen los static_configs del compose. No es cosmética: la
+      # alerta de disponibilidad filtra por `platform="teleflow"` para no dispararse con targets
+      # de otros proyectos cuando el Prometheus del organismo está compartido. Sin esto, la
+      # regla sería correcta en el compose y **muda** en el cluster, que es justo donde importa.
+      relabelings:
+        - targetLabel: platform
+          replacement: teleflow
 {{- end }}
+{{- end }}
+
+{{- if .Values.observabilidad.prometheusRule.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Release.Name }}-alertas
+  labels:
+    {{- include "teleflow.labels" . | nindent 4 }}
+    {{- with .Values.observabilidad.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- /* El archivo entero, tal cual. Copiar las reglas acá adentro crearía la segunda copia
+         que todo este arreglo existe para evitar. */}}
+{{ .Files.Get "alerts/alerts.yml" | indent 2 }}
 {{- end }}

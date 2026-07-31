@@ -38,6 +38,19 @@ jobs:
       - name: Tests unitarios
         run: pytest -m "not e2e" -q
 
+      # Las reglas de alerta no las cubre pytest: `promtool test rules` las evalúa contra series
+      # sintéticas y comprueba que **disparen** en el escenario correcto. Sin esto, una regla con
+      # un nombre de métrica mal escrito pasa CI y no dispara nunca — que es indistinguible de
+      # un sistema sano.
+      #
+      # La versión sale del Dockerfile para no tener dos que se separen: promtool y el
+      # Prometheus que va a evaluar estas reglas tienen que ser el mismo.
+      - name: Alertas de Prometheus (promtool test rules)
+        run: |
+          IMAGEN=$(sed -n 's/^FROM //p' observability/prometheus.Dockerfile)
+          docker run --rm -v "$PWD:/repo" -w /repo/observability \
+            --entrypoint promtool "$IMAGEN" test rules alerts_test.yml
+
   e2e:
     name: Tests e2e (stack docker compose)
     runs-on: ubuntu-latest

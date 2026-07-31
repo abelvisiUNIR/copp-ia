@@ -2,6 +2,13 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Sin `alerting:` a propósito: no hay Alertmanager en el compose. Las alertas se evalúan igual y
+# se ven en la pestaña Alerts de Prometheus, que alcanza para dev y para verificarlas en CI. El
+# ruteo (a quién se le avisa) es del organismo, no del producto — mismo criterio que el resto de
+# la observabilidad del chart.
+rule_files:
+  - /etc/prometheus/alerts.yml
+
 scrape_configs:
   - job_name: teleflow
     metrics_path: /metrics
