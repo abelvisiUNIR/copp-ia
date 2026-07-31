@@ -12,6 +12,8 @@ from teleflow.executor_service.business_metrics import (
     HUMAN_TASK_BACKLOG,
     HUMAN_TASK_OLDEST_SECONDS,
     INSTANCES_CURRENT,
+    LAST_SUCCESS_TIMESTAMP,
+    REFRESH_FAILURES,
     BusinessMetricsCollector,
     InstanceGroup,
 )
@@ -152,3 +154,57 @@ def test_dos_colectores_secuenciales_publican_los_dos(collector):
 
     assert backlog("venta", "aprobacion") == 4
     assert a._human_task_labels == b._human_task_labels == {("venta", "aprobacion")}
+
+
+class _SesionFalsa:
+    """Sesión que no toca la base: `refresh()` se prueba con `_collect` reemplazado."""
+
+    async def __aenter__(self) -> "_SesionFalsa":
+        return self
+
+    async def __aexit__(self, *_: object) -> bool:
+        return False
+
+
+async def test_un_refresh_exitoso_adelanta_el_reloj_de_frescura(monkeypatch):
+    """`teleflow_business_metrics_last_success_timestamp_seconds` es la señal que la alerta mira.
+
+    Sin ella, un colector que dejó de refrescar es indistinguible de uno al día: los gauges
+    conservan el último valor y `up` sigue en 1.
+    """
+    LAST_SUCCESS_TIMESTAMP.set(0)
+    colector = BusinessMetricsCollector(lambda: _SesionFalsa(), Settings())  # type: ignore[arg-type]
+    monkeypatch.setattr(colector, "_collect", lambda _session: _vacio())
+
+    await colector.refresh()
+
+    assert LAST_SUCCESS_TIMESTAMP._value.get() > 0
+
+
+async def test_un_refresh_fallido_deja_rastro_y_no_adelanta_el_reloj(monkeypatch):
+    """El fallo no baja el servicio a propósito, así que el rastro es lo único que queda.
+
+    El timestamp quieto es lo que hace disparar a TeleFlowMetricasDeNegocioCongeladas; el
+    contador es lo que después distingue "está fallando" de "nunca arrancó".
+    """
+    LAST_SUCCESS_TIMESTAMP.set(0)
+    fallos_antes = REFRESH_FAILURES._value.get()
+    colector = BusinessMetricsCollector(lambda: _SesionFalsa(), Settings())  # type: ignore[arg-type]
+    monkeypatch.setattr(colector, "_collect", lambda _session: _explota())
+
+    with pytest.raises(RuntimeError):
+        await colector.refresh()
+
+    assert LAST_SUCCESS_TIMESTAMP._value.get() == 0, (
+        "el timestamp avanzó con un refresh que falló: la alerta de congelamiento nunca "
+        "dispararía y los paneles seguirían mostrando el último valor bueno como si fuera actual"
+    )
+    assert REFRESH_FAILURES._value.get() == fallos_antes + 1
+
+
+async def _vacio() -> list[InstanceGroup]:
+    return []
+
+
+async def _explota() -> list[InstanceGroup]:
+    raise RuntimeError("postgres inalcanzable")

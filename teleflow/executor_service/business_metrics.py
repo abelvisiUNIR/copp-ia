@@ -23,7 +23,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from prometheus_client import Gauge
+from prometheus_client import Counter, Gauge
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -54,6 +54,25 @@ HUMAN_TASK_OLDEST_SECONDS = Gauge(
     "teleflow_human_task_oldest_seconds",
     "Antigüedad de la instancia más vieja esperando en un human_task, por step",
     ["flow_name", "step_name"],
+)
+
+# Frescura. Los tres gauges de arriba **conservan su último valor** si el refresh falla: el
+# `except` del loop loguea y sigue, a propósito (un fallo de métricas no debe bajar el
+# servicio). La consecuencia es que un backlog congelado en 10 se ve idéntico a un backlog
+# estable de 10 — sin hueco en el dashboard que delate nada, y con `up == 1`, así que ninguna
+# alerta sobre la salud del pod lo detecta.
+#
+# Estos dos existen para que ese estado sea **observable desde afuera**: no arreglan el fallo,
+# lo hacen decible. El timestamp arranca en 0 a propósito — un servicio que nunca logró un
+# refresh (DB caída al arrancar, o el colector que nadie arrancó) da una antigüedad enorme
+# desde el primer scrape, que es exactamente lo que hay que reportar.
+LAST_SUCCESS_TIMESTAMP = Gauge(
+    "teleflow_business_metrics_last_success_timestamp_seconds",
+    "Unix timestamp del último refresh exitoso de los gauges de negocio (0 = ninguno todavía)",
+)
+REFRESH_FAILURES = Counter(
+    "teleflow_business_metrics_refresh_failures_total",
+    "Refrescos de los gauges de negocio que terminaron en error",
 )
 
 
@@ -113,9 +132,20 @@ class BusinessMetricsCollector:
                 log.error("business_metrics_error", error=str(exc))
 
     async def refresh(self) -> None:
-        async with self._sessionmaker() as session:
-            groups = await self._collect(session)
-        self.publish(groups, datetime.now(timezone.utc))
+        # El contador se incrementa acá y no en el `except` del loop porque hay **dos**
+        # llamadores: el loop y el refresh inicial del lifespan. Contar en un solo lado dejaba
+        # el fallo de arranque —el más probable, porque la DB puede no estar lista— sin registrar.
+        try:
+            async with self._sessionmaker() as session:
+                groups = await self._collect(session)
+            now = datetime.now(timezone.utc)
+            self.publish(groups, now)
+            # Última línea del camino feliz: el timestamp solo avanza si los tres gauges de
+            # arriba quedaron efectivamente actualizados.
+            LAST_SUCCESS_TIMESTAMP.set(now.timestamp())
+        except Exception:
+            REFRESH_FAILURES.inc()
+            raise
 
     async def _collect(self, session: AsyncSession) -> list[InstanceGroup]:
         """Un solo GROUP BY sobre el working set (los estados vivos usan el índice de status)."""
