@@ -108,6 +108,18 @@ observabilidad:
     enabled: false
     label: grafana_dashboard
     labelValue: "1"
+  prometheusRule:
+    # Las alertas de `alerts/alerts.yml` como PrometheusRule. Mismo CRD del Operator que el
+    # ServiceMonitor y misma razón para no venir puesto: sin el operator, el install falla.
+    #
+    # Encenderlo **con** el ServiceMonitor apagado deja la alerta de disponibilidad muda: sin
+    # ServiceMonitor no hay etiqueta `platform`, y la regla filtra por ella. Las dos de negocio
+    # sí funcionan (miran nombres de métrica, no etiquetas).
+    enabled: false
+    # Igual que en el ServiceMonitor: muchas instalaciones exigen una etiqueta (p. ej.
+    # `release: kube-prometheus-stack`) para que su Prometheus adopte la regla. Sin ella se crea
+    # y se ignora — el peor de los casos, porque `kubectl get prometheusrule` la muestra.
+    labels: {}
 
 migrations:
   enabled: true  # Job `alembic upgrade head` (Job normal, NO hook — ver migrate-job.yaml)

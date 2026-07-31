@@ -1,19 +1,19 @@
 ---
 project: copp-ia
 type: concept
-provenance: copp-ia@devyos@3db6cd3
+provenance: copp-ia@devyos@029135e
 created: 2026-07-24
-updated: 2026-07-30
+updated: 2026-07-31
 tags: [concepto, calidad, resiliencia, observabilidad, patron]
 ---
 
 # Fallas silenciosas — el patrón que más veces apareció en este proyecto
 
-> Provenance: `copp-ia@devyos@74a0002`. Sintetizado de **diez** work-streams distintos
+> Provenance: `copp-ia@devyos@029135e`. Sintetizado de **once** work-streams distintos
 > (`except-swallow-audit`, `limpieza-dx-openapi`, `observabilidad-negocio`,
 > `composer-llm-hardening`, `auditoria-persistida`, `registry-cobertura`,
-> `idempotencia-execute`, `review-ui-tests`, `estado-durable`) que encontraron el mismo
-> problema con caras distintas.
+> `idempotencia-execute`, `review-ui-tests`, `estado-durable`, `fase-e-helm-kind`,
+> `alerta-up-metrics-service`) que encontraron el mismo problema con caras distintas.
 
 ## Qué es
 Un mecanismo que **parece** estar protegiendo algo y no lo está, y que cuando falla **no
@@ -41,6 +41,7 @@ meses en el repo antes de encontrarse, y ninguno se encontró por un test.
 | 12 | `executor_service/engine.py` | `_recover()` retoma lo que quedó a mitad | Corría en **cada** réplica y nadie reclamaba la instancia: con 3 réplicas, **cada deploy con un expediente en vuelo lo ejecutaba 3 veces**. Medido: 63 requests donde iban 21, y **tres** transiciones `IN_PROGRESS → FAILED` del mismo caso. Con una integración real son tres altas, tres correos. Es el daño que la idempotencia de `/execute` evita **desde afuera**, ocurriendo desde adentro | `f168452` (`fase-e-helm-kind`) |
 | 13 | `executor_service/adapters.py` | `${env.LMS_URL}` sin definir = error visible | Se reemplazaba por **cadena vacía**: el deploy pasaba, la validación pasaba, y el fallo aparecía cuando un expediente real llegaba al step, con un `UnsupportedProtocol` que no nombra la variable. Peor en credenciales: un `Bearer ${env.TOKEN}` sin TOKEN mandaba el header **vacío**, y con un servidor permisivo el request salía bien **sin autenticar** | `c42f13f` (`fase-e-helm-kind`) |
 | 7 | `registry_service/main.py` | `latest` apunta a la versión mayor | `_semver_key` quitaba los no-dígitos de cada chunk, así que el `1` de `rc1` se sumaba al patch: `1.0.0-rc1` → `(1,0,1)`, **mayor** que `1.0.0`. Registrar un candidato después del estable movía `latest` al candidato y el executor disparaba procesos de negocio con él. El 201 llegaba igual y el pointer apuntaba a algo que existía | `4c7ce34` (`registry-cobertura`) |
+| 14 | `executor_service/business_metrics.py` + las alertas que lo cubren | degradación elegante = el servicio aguanta un fallo de métricas | El `_loop` atrapa la excepción del refresh, loguea y sigue — **correcto**, un fallo de métricas no debe bajar el servicio. Y es exactamente lo que produce el silencio: con Postgres inalcanzable el pod queda **vivo**, `/metrics` responde y los gauges conservan el último valor bueno. Un backlog congelado en 10 es indistinguible de uno estable en 10, y `up` vale **1**, así que ninguna alerta de disponibilidad lo ve. Medido: 4 minutos con `up=1` y la alerta de caída en `inactive`. **Y la contramedida repite el patrón una capa más arriba:** una regla de alerta con un nombre de métrica mal escrito pasa `promtool check rules`, aparece en `kubectl get prometheusrule` y **nunca dispara** — la herramienta construida para detectar el silencio se vuelve silenciosa igual | `3524781` + `029135e` (`alerta-up-metrics-service`) |
 
 ## La forma común
 En los primeros cuatro, el mecanismo de aviso existía y **no cortaba**:
@@ -74,6 +75,21 @@ Dos variantes que conviene tener presentes, porque no se buscan igual:
   porque el nombre del nodo dependía del ID del contenedor. Cada capa se veía correcta por
   separado: solo medir el resultado final —publicar, recrear, contar— lo mostró. Cuando algo se
   declara durable, la pregunta es **dónde termina el byte**, no qué dice la declaración.
+- **El mecanismo correcto puede ser el que produce el silencio** (#14). En los trece casos
+  anteriores había algo mal puesto: un `except` que no debía tragar, un `COPY` a la ruta
+  equivocada, un fallback que mentía. Acá el `except` está **bien** — un fallo de métricas no
+  debe bajar un servicio — y justamente por eso el fallo no se nota: sin él el colector moriría
+  y `up` lo delataría. Es la contracara de #1, y la contramedida es la opuesta: no sacar el
+  `except`, sino **emitir la evidencia de que se está usando** (un timestamp de último éxito, un
+  contador de fallos). Cada vez que se decide "esto degrada en vez de caerse", queda pendiente
+  publicar la señal de que está degradado; si no, se cambió una caída ruidosa por una mentira
+  silenciosa. Vale para todo fallback, cache que sirve datos viejos o reintento que se rinde.
+- **La herramienta que detecta el silencio puede ser silenciosa** (#14, segunda mitad). Una
+  alerta sobre una métrica mal escrita es sintácticamente válida, se lista, y no dispara nunca:
+  desde afuera es idéntica a un sistema sano. Por eso `promtool test rules` y no solo `check
+  rules` — la diferencia es probar que **existe** versus probar que **funciona**, el mismo filo
+  que separa `helm template` de instalar en un cluster. Regla práctica: cuando se construye un
+  detector, hay que romperlo a propósito una vez y ver que grite.
 - **Una función que nunca falla puede estar corrompiendo un orden** (#7). `_semver_key`
   aceptaba cualquier string y siempre devolvía una tupla: esa tolerancia *era* el bug, porque
   el `1` de `rc1` terminaba sumado al número de patch. No hay excepción que atrapar ni log que
@@ -184,4 +200,5 @@ Work-streams `except-swallow-audit` (2026-07-14), `limpieza-dx-openapi` (2026-07
 [[2026-07-25-composer-llm-fallos-explicitos]] ·
 [[2026-07-14-clasificacion-errores-integracion]]
 (la trampa del "envolver un fallo de red en un error genérico") ·
-[[2026-07-24-metricas-de-negocio-gauges]] · [[roadmap]]
+[[2026-07-24-metricas-de-negocio-gauges]] · work-stream `alerta-up-metrics-service`
+(2026-07-31, caso 14: la frescura de los gauges y las alertas que la miran) · [[roadmap]]

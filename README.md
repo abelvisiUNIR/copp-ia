@@ -140,7 +140,8 @@ review-ui/           React + Vite (diff viewer PR-style)
 alembic/             migraciones (no create_all en producción)
 helm/teleflow/       chart para K8s/RKE2 (réplicas según sección 10.2)
 helm/teleflow/dashboards/  dashboards Grafana — única copia, la usan compose y el chart
-observability/       prometheus.yml + provisioning de Grafana para el compose
+helm/teleflow/alerts/      reglas de alerta — única copia, la usan compose y el chart
+observability/       prometheus.yml + provisioning de Grafana + tests de las alertas
 examples/            ceibal.tflow · venta_internet_hogar.tflow
 tests/               pytest (parser, validador, evaluador, DAG)
 ```
@@ -246,30 +247,68 @@ instalar algo como `kube-prometheus-stack` aparte — este chart no se lo resuel
 | Anotaciones `prometheus.io/*` en los pods | **sí** | descubrimiento por anotaciones; inertes si nadie las mira |
 | `ServiceMonitor` | no | Prometheus Operator. **Requiere su CRD**: encenderlo sin el operator hace fallar el install |
 | ConfigMap con los dashboards | no | lo levanta el sidecar de Grafana buscando la etiqueta `grafana_dashboard` |
+| `PrometheusRule` con las alertas | no | mismo CRD del Operator que el `ServiceMonitor`, misma razón para no venir puesto |
 
 ```bash
-helm upgrade --install teleflow helm/teleflow -n teleflow   --set observabilidad.serviceMonitor.enabled=true   --set observabilidad.serviceMonitor.labels.release=kube-prometheus-stack   --set observabilidad.dashboards.enabled=true
+helm upgrade --install teleflow helm/teleflow -n teleflow   --set observabilidad.serviceMonitor.enabled=true   --set observabilidad.serviceMonitor.labels.release=kube-prometheus-stack   --set observabilidad.dashboards.enabled=true   --set observabilidad.prometheusRule.enabled=true   --set observabilidad.prometheusRule.labels.release=kube-prometheus-stack
 ```
 
 La etiqueta del `ServiceMonitor` importa: muchas instalaciones solo adoptan los que la traen, y
 sin ella el recurso se crea y **se ignora en silencio**.
 
-Los dashboards viven en `helm/teleflow/dashboards/` y no en `observability/` porque Helm solo
-puede leer archivos de adentro del chart. Es una sola copia con dos consumidores —la imagen de
-Grafana del compose y el ConfigMap del chart—, para que no haya dos versiones desincronizadas.
+La etiqueta del `PrometheusRule` importa por lo mismo. Y encenderlo **con el `ServiceMonitor`
+apagado** deja la alerta de disponibilidad muda: la etiqueta `platform=teleflow` que la regla
+filtra la estampa el `ServiceMonitor`. Las dos alertas de negocio funcionan igual, porque miran
+nombres de métrica y no etiquetas.
+
+Los dashboards viven en `helm/teleflow/dashboards/` y las reglas de alerta en
+`helm/teleflow/alerts/`, no en `observability/`, porque Helm solo puede leer archivos de adentro
+del chart. En los dos casos es una sola copia con dos consumidores —las imágenes del compose y
+los recursos que genera el chart—, para que no haya dos versiones desincronizadas.
 
 Las métricas de negocio son de dos clases y no se mezclan:
 
 - **Counters de eventos** (`teleflow_instances_total`, `teleflow_steps_total`): cuentan lo que
   ya pasó, en el momento en que pasa.
 - **Gauges de estado actual** (`teleflow_instances_current`, `teleflow_human_task_backlog`,
-  `teleflow_human_task_oldest_seconds`): los recalcula un scanner del executor cada
+  `teleflow_human_task_oldest_seconds`): los recalcula un scanner de `metrics-service` cada
   `BUSINESS_METRICS_INTERVAL` (30 s) agregando `process_instances`. Un counter no puede
   responder "¿cuánta gente tiene trabajo pendiente ahora?" — para eso están estos.
 
 Los gauges cubren solo los estados **vivos** (`TRIGGERED`, `IN_PROGRESS`, `RETRYING`,
 `WAITING_SIGNAL`): los terminales ya los cuenta `teleflow_instances_total` y agregarlos
 obligaría a escanear toda la historia de la tabla en cada ciclo.
+
+### Alertas
+
+Las reglas están en `helm/teleflow/alerts/alerts.yml` — una sola fuente que consumen el
+Prometheus del compose (horneada en su imagen) y el `PrometheusRule` del chart. En el compose se
+ven en la pestaña *Alerts* de Prometheus; no hay Alertmanager, porque a quién se le avisa es
+decisión del organismo.
+
+| Alerta | Dispara cuando | Gravedad |
+|---|---|---|
+| `TeleFlowServicioCaido` | un target de TeleFlow no responde al scrape hace 2 min | critical |
+| `TeleFlowMetricasDeNegocioCongeladas` | los gauges de negocio llevan >3 min sin refrescarse | critical |
+| `TeleFlowSinPublicadorDeMetricasDeNegocio` | no existe la serie de frescura hace >5 min | warning |
+
+El criterio es alertar sobre **lo que no se nota**. Un gateway caído lo reporta el primer
+usuario que entra; que los números de negocio dejen de actualizarse no lo reporta nadie:
+
+- Si `metrics-service` **se cae**, los paneles muestran "No data", que se lee igual que "no hay
+  trabajo pendiente". Corre en una sola réplica a propósito, así que no tiene quien lo
+  reemplace.
+- Peor: si el pod **sigue vivo pero no puede leer la base**, el refresh falla, se loguea y el
+  servicio sigue —un fallo de métricas no debe bajar el servicio—, pero los gauges conservan el
+  último valor. Un backlog congelado en 10 es indistinguible de un backlog estable de 10, y
+  `up` vale 1. Para eso existe `teleflow_business_metrics_last_success_timestamp_seconds`: es la
+  única señal que distingue "al día" de "quieto". El acompañante
+  `teleflow_business_metrics_refresh_failures_total` separa las dos causas — sube si el refresh
+  está fallando, queda quieto si el colector nunca arrancó.
+
+Las reglas tienen tests unitarios (`observability/alerts_test.yml`, `promtool test rules`) que
+corren en CI. No son ceremonia: una alerta con un nombre de métrica mal escrito es
+sintácticamente válida y **nunca dispara**, que desde afuera se ve igual que un sistema sano.
 
 ## Doc vs. código: discrepancias conocidas
 

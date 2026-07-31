@@ -1,9 +1,9 @@
 ---
 project: copp-ia
 type: concept
-provenance: copp-ia@devyos@74a0002
+provenance: copp-ia@devyos@029135e
 created: 2026-07-30
-updated: 2026-07-30
+updated: 2026-07-31
 tags: [concepto, multi-replica, concurrencia, despliegue, patron]
 ---
 
@@ -54,6 +54,14 @@ Las cuatro se resolvieron distinto **a propósito**, según qué garantía hací
   hay nada que compartir. Un componente de una réplica lo dice sin lógica ninguna: no hay lock que
   pueda estar mal, ni líder que se crea líder sin serlo. **La contracara es que la garantía pasa a
   ser que nadie lo escale**, así que hay que fijarlo en el chart y protegerlo con un test.
+  **Y hay una segunda contracara, que tardó en registrarse:** una réplica es también un **punto
+  único de fallo**. Sin failover, la única red que queda es que alguien mire si el componente
+  está haciendo su trabajo — así que esta solución no está completa hasta que se monitorea. Se
+  cerró el 2026-07-31 (work-stream `alerta-up-metrics-service`), y en el camino apareció que
+  `up` no alcanza: el pod puede quedar **vivo** sin poder refrescar nada, y entonces publica el
+  último valor bueno con `up` en 1. Hizo falta una señal de frescura explícita
+  (`teleflow_business_metrics_last_success_timestamp_seconds`) y alertar sobre ella. Ver
+  [[fallas-silenciosas]] #14.
 - **Propiedad con vencimiento** (caso 4) — cuando N procesos pueden hacer la tarea pero solo uno
   debe hacerla *a la vez*, y si el que la tiene muere, otro debe tomarla. Un candado no alcanza
   (deja el trabajo trabado para siempre); hace falta un **lease**.
