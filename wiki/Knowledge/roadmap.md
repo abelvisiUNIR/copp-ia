@@ -136,9 +136,16 @@ Combinado y en este orden de madurez:
 - [ ] Runbooks, backup/restore Postgres, disaster recovery, alertas Prometheus.
   Backup/restore ya está ([[estado-durable]]). **Observabilidad: el chart trae los puntos de
   integración** (anotaciones de scrape, `ServiceMonitor` y ConfigMap de dashboards, opt-in) y se
-  verificó con un Prometheus real descubriendo los 11 pods. Falta escribir las **reglas de
-  alerta** — la primera y más urgente, el `up` de `metrics-service`, que quedó como punto único
-  de fallo de las métricas de negocio.
+  verificó con un Prometheus real descubriendo los 11 pods. **Alertas: hechas** (2026-07-31 →
+  work-stream `alerta-up-metrics-service`), y con más alcance del que decía este ítem: `up == 0`
+  cubría el pod caído, pero no el caso peor —el pod **vivo** que no puede leer la base, donde el
+  `except` del colector mantiene el servicio arriba y los gauges conservan el último valor bueno
+  con `up` en 1—. Hizo falta emitir la señal primero
+  (`teleflow_business_metrics_last_success_timestamp_seconds`, más un contador de fallos):
+  ninguna de las 16 métricas del repo era un timestamp de último éxito. Tres reglas en
+  `helm/teleflow/alerts/alerts.yml`, **una sola fuente** que consumen la imagen de Prometheus del
+  compose y un `PrometheusRule` opt-in del chart, igual que los dashboards y por el mismo motivo.
+  Ver [[fallas-silenciosas]] #14. **Siguen pendientes runbooks y disaster recovery.**
 - [ ] Hardening: TLS, no exponer servicios internos, revisión de superficie de ataque.
   El gateway dejó de ser `LoadBalancer` fijo (Service configurable + Ingress opt-in) y la
   `review-ui` **dejó de publicarse**: era la UI desde la que se aprueba y despliega código, y
