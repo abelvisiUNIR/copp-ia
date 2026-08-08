@@ -1,9 +1,9 @@
 ---
 project: copp-ia
 type: concept
-provenance: copp-ia@devyos@029135e
+provenance: copp-ia@devyos@0b39edb
 created: 2026-07-24
-updated: 2026-07-31
+updated: 2026-08-08
 tags: [concepto, calidad, resiliencia, observabilidad, patron]
 ---
 
@@ -179,6 +179,29 @@ procesos; un conteo de instancias en Prometheus, cuando el compose scrapea un ta
 Regla práctica: **el escenario del test tiene que ser el que el sistema produce solo.** Si el bug
 se dispara en cada deploy, el test tiene que ser un deploy — no dos hilos sincronizados a mano.
 
+**Y cuando una comprobación local pasa, hay que preguntarse qué la hizo pasar** (caso 15,
+`alerta-up-metrics-service`, 2026-07-31). Los catorce casos de la tabla son del sistema; este es
+del **método de verificación**, y es la vuelta de tuerca que le faltaba a la regla de arriba. El
+paso de `promtool` se movió al job `e2e` razonando que el `up --build` deja la imagen de
+Prometheus en el daemon; se verificó local, **dio verde, y estaba verde por la causa equivocada**:
+la imagen estaba ahí porque la había traído un `docker run` al principio de la sesión, no porque
+el build la dejara. Con BuildKit, `compose build` deja la **base** en su caché de build y no en el
+image store (`.github/workflows/ci.yml:66-69`). El entorno tenía la evidencia sin tener el
+mecanismo — el equivalente, un nivel más arriba, del caso 3: el `COPY` corría perfecto y el
+archivo estaba por otro motivo.
+
+Dos cosas que conviene no suavizar. La primera: costó **tres intentos** meter ese paso al
+pipeline, y **ninguno de los dos fallos los detectó quien los escribió** — los agarró el CI. La
+segunda: el primer intento era un mal diseño contra el caso **#10** de esta misma página (las
+imágenes de Bitnami retiradas de Docker Hub, "Docker Hub no es una dependencia confiable"),
+escrito por la misma persona horas antes. **Saberlo no alcanzó**, lo cual dice que el valor de
+esta página no está en haberla leído sino en usarla como checklist en el momento de decidir.
+
+Lo que sí funcionó fue **`--pull=never`**: convirtió el supuesto equivocado en un fallo ruidoso
+en lugar de un pull silencioso que anda de a ratos. Es la misma forma del fix de siempre —
+cuando un paso puede resolverse por dos caminos y solo uno es el que se está afirmando,
+prohibir el otro es lo que hace hablar al mecanismo.
+
 ## Un pariente cercano, que no es lo mismo
 El supuesto **"esto corre en un solo proceso"** apareció cuatro veces en este repo y comparte el
 síntoma —degrada una garantía sin romper nada visible— pero tiene otra raíz: acá el mecanismo de
@@ -201,4 +224,6 @@ Work-streams `except-swallow-audit` (2026-07-14), `limpieza-dx-openapi` (2026-07
 [[2026-07-14-clasificacion-errores-integracion]]
 (la trampa del "envolver un fallo de red en un error genérico") ·
 [[2026-07-24-metricas-de-negocio-gauges]] · work-stream `alerta-up-metrics-service`
-(2026-07-31, caso 14: la frescura de los gauges y las alertas que la miran) · [[roadmap]]
+(2026-07-31, caso 14: la frescura de los gauges y las alertas que la miran; y caso 15, el
+primero sobre el método de verificación y no sobre el sistema) · `.github/workflows/ci.yml`
+(el razonamiento del paso de `promtool`, comentado en el pipeline) · [[roadmap]]
