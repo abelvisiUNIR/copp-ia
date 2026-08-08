@@ -63,9 +63,13 @@ class Settings(BaseSettings):
     events_exchange: str = "teleflow.domain.events"
 
     # Bus de eventos: reintentos antes de mandar el evento a la DLQ (<queue>.dlq).
-    # La cola lleva sufijo de versión: cambiar sus argumentos (x-dead-letter-exchange)
-    # sobre una cola ya declarada da PRECONDITION_FAILED en RabbitMQ.
-    rules_queue: str = "teleflow.rules.v1"
+    # La cola lleva sufijo de versión: cambiar sus argumentos (x-dead-letter-exchange,
+    # x-queue-type) sobre una cola ya declarada da PRECONDITION_FAILED en RabbitMQ.
+    #
+    # v1 -> v2 (2026-08-08): la cola pasa a `quorum` para que sobreviva a la caída del nodo que
+    # la aloja. La v1 queda en el broker con lo que tuviera: **no se migran los mensajes en
+    # vuelo**, así que conviene drenarla antes de desplegar (o consumirla a mano después).
+    rules_queue: str = "teleflow.rules.v2"
     event_max_attempts: int = 3
     event_retry_base_delay: float = 1.0
 

@@ -199,8 +199,14 @@ metadata:
   labels:
     {{- include "teleflow.labels" . | nindent 4 }}
 spec:
-  serviceName: {{ include "teleflow.rabbitmqHost" . }}
-  replicas: 1
+  serviceName: {{ include "teleflow.rabbitmqHost" . }}-headless
+  replicas: {{ .Values.rabbitmq.replicas }}
+  {{/*
+    Con `OrderedReady` (el default) un pod que no se pone Ready frena a los siguientes. En la
+    formación inicial del cluster eso es un deadlock posible: los nodos se descubren entre sí,
+    así que esperar a que el 0 esté listo antes de crear el 1 puede dejar a los tres esperando.
+  */}}
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
       app: {{ include "teleflow.rabbitmqHost" . }}
@@ -209,7 +215,29 @@ spec:
       labels:
         app: {{ include "teleflow.rabbitmqHost" . }}
         {{- include "teleflow.labels" . | nindent 8 }}
+      annotations:
+        # Un cambio de config tiene que rotar los pods; si no, la config nueva queda en el
+        # ConfigMap y los nodos siguen con la vieja, que es exactamente un cambio que "se
+        # aplicó" y no está corriendo.
+        checksum/config: {{ include (print $.Template.BasePath "/rabbitmq-cluster.yaml") . | sha256sum }}
     spec:
+      serviceAccountName: {{ include "teleflow.rabbitmqHost" . }}
+      {{- if gt (int .Values.rabbitmq.replicas) 1 }}
+      {{/*
+        Tres réplicas en el mismo nodo no son HA, son tres copias que se caen juntas. Es
+        `preferred` y no `required` para que un cluster de un solo nodo (kind, dev) siga
+        instalando: en esa topología no hay HA y no la puede haber.
+      */}}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: {{ include "teleflow.rabbitmqHost" . }}
+      {{- end }}
       containers:
         - name: rabbitmq
           image: {{ .Values.rabbitmq.image | quote }}
@@ -219,9 +247,34 @@ spec:
               value: {{ .Values.rabbitmq.auth.username | quote }}
             - name: RABBITMQ_DEFAULT_PASS
               value: {{ .Values.rabbitmq.auth.password | quote }}
+            {{/*
+              El nombre del nodo tiene que ser estable y resoluble por los otros: `rabbit@<pod>`
+              a secas no resuelve entre pods. Con el FQDN del headless Service, el nodo que
+              vuelve después de un reinicio se reconoce a sí mismo y reencuentra a sus pares —
+              es la misma razón por la que esto es StatefulSet y no Deployment, un nivel más
+              arriba: allá el nombre tenía que sobrevivir al reinicio, acá además tiene que ser
+              alcanzable desde otro pod.
+            */}}
+            - name: MI_POD
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: RABBITMQ_USE_LONGNAME
+              value: "true"
+            - name: RABBITMQ_NODENAME
+              value: "rabbit@$(MI_POD).{{ include "teleflow.rabbitmqHost" . }}-headless.{{ .Release.Namespace }}.svc.cluster.local"
+            - name: RABBITMQ_ERLANG_COOKIE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "teleflow.rabbitmqHost" . }}-cookie
+                  key: cookie
+            - name: RABBITMQ_ENABLED_PLUGINS_FILE
+              value: /etc/rabbitmq/cluster/enabled_plugins
           ports:
             - containerPort: 5672
             - containerPort: 15672
+            - containerPort: 4369    # epmd: cómo se encuentran los nodos entre sí
+            - containerPort: 25672   # distribución Erlang entre nodos
           readinessProbe:
             exec:
               command: ["rabbitmq-diagnostics", "-q", "ping"]
@@ -237,8 +290,22 @@ spec:
           volumeMounts:
             - name: datos
               mountPath: /var/lib/rabbitmq
+            {{/*
+              `rabbitmq.conf` va por subPath a propósito: montar el directorio entero taparía
+              `/etc/rabbitmq/conf.d`, donde el entrypoint de la imagen escribe el usuario y
+              password por default. Se perdería el login sin ningún error de config.
+            */}}
+            - name: cluster
+              mountPath: /etc/rabbitmq/rabbitmq.conf
+              subPath: rabbitmq.conf
+            - name: cluster
+              mountPath: /etc/rabbitmq/cluster
           resources:
             {{- toYaml .Values.rabbitmq.resources | nindent 12 }}
+      volumes:
+        - name: cluster
+          configMap:
+            name: {{ include "teleflow.rabbitmqHost" . }}-cluster
   volumeClaimTemplates:
     - metadata:
         name: datos

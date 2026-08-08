@@ -202,6 +202,15 @@ redis:
 rabbitmq:
   enabled: true
   image: rabbitmq:3.13-management-alpine
+  # 3 por default, como pide §10.2 — y a propósito **no** 1: si producción tuviera que acordarse
+  # de subirlo, el default sería un punto único de fallo silencioso. Para dev o un cluster de un
+  # solo nodo (kind), `--set rabbitmq.replicas=1`: forma cluster de uno y las colas quorum
+  # quedan con un solo replicante, que es lo que se puede dar en esa topología.
+  replicas: 3
+  # Credencial con la que los nodos se autentican entre sí. Vacío = el chart genera una y
+  # **la conserva** entre upgrades (ver templates/rabbitmq-cluster.yaml). Fijarla acá solo si
+  # el organismo la administra por fuera.
+  erlangCookie: ""
   auth:
     username: teleflow
     password: teleflow      # ← pendiente Fase E: sacarlo de values a un Secret
