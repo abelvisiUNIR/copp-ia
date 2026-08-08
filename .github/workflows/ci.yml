@@ -139,3 +139,55 @@ jobs:
 
       - name: Build imagen de servicios Python
         run: docker build -t teleflow:ci .
+
+  chart:
+    name: Chart (render en los modos que soporta)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: azure/setup-helm@v4
+
+      # El chart soporta dos capas de datos —la propia y la del organismo— y hasta ahora solo se
+      # renderizaba la propia. El camino externo se rompe de formas que no se ven leyendo el
+      # diff: un puerto que quedó fijo, credenciales que salen del bloque del componente que no
+      # se instala, un `secretKeyRef` con la clave vacía que deja el pod en
+      # CreateContainerConfigError. Todo eso lo muestra un render y nada más.
+      - name: Render en los modos soportados
+        run: |
+          set -e
+          render() { helm template t helm/teleflow --set apiKey=x "$@"; }
+
+          echo "--- propio (default) ---"
+          render > /dev/null
+
+          echo "--- externo: puerto, credenciales y TLS propios ---"
+          salida=$(render --set postgres.enabled=false \
+            --set externalDatabase.host=pg.ext --set externalDatabase.port=6432 \
+            --set externalDatabase.username=tf --set externalDatabase.password=pw \
+            --set externalDatabase.database=db --set externalDatabase.sslMode=verify-full)
+          echo "$salida" | grep -q 'postgresql+asyncpg://tf:pw@pg.ext:6432/db?ssl=verify-full' \
+            || { echo "la URL externa no toma puerto/credenciales/TLS"; exit 1; }
+          echo "$salida" | grep -q 'host, port = "pg.ext", 6432' \
+            || { echo "el initContainer no espera al puerto externo"; exit 1; }
+
+          # Lo que hace utilizable el camino externo en serio: que la credencial de una base
+          # administrada no quede en el spec del pod.
+          echo "--- externo con Secret del organismo ---"
+          conSecret=$(render --set postgres.enabled=false --set externalDatabase.host=pg.ext \
+            --set externalDatabase.password=NO-DEBE-APARECER \
+            --set externalDatabase.existingSecret=pg-creds)
+          if echo "$conSecret" | grep -q NO-DEBE-APARECER; then
+            echo "la password quedó en el render pese al existingSecret"; exit 1
+          fi
+          echo "$conSecret" | grep -q 'key: "DATABASE_URL"' \
+            || { echo "no se consume la URL del Secret del organismo"; exit 1; }
+
+          echo "--- externo a medio configurar: tiene que fallar y decir qué falta ---"
+          if render --set postgres.enabled=false --set externalDatabase.host=pg.ext \
+               --set externalDatabase.existingSecret=pg-creds --set externalDatabase.urlKey= \
+               2>&1 | grep -q 'urlKey'; then
+            echo "ok: falla nombrando la clave que falta"
+          else
+            echo "un existingSecret sin urlKey debería cortar el install"; exit 1
+          fi

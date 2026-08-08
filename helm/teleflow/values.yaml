@@ -27,13 +27,47 @@ env:
   LLM_PROVIDER: stub
   WORKER_CONCURRENCY: "10"
 
-# Solo se usan con el subchart correspondiente en `enabled: false`.
+# Capa de datos administrada por el organismo. Se usa poniendo en `false` el `enabled` del
+# componente de abajo (`postgres.enabled: false`, …).
+#
+# Este es el camino recomendado para producción en el caso de Postgres: un organismo que ya
+# opera una base administrada tiene HA de verdad, con guardia que la atiende, y eso es mejor que
+# cualquier cosa que declare este chart. Ver el ADR de la wiki "hasta dónde llega el HA de la
+# capa de datos que entrega la plataforma" (2026-08-08).
+#
+# `host` es obligatorio aun con `existingSecret`, porque los initContainers esperan a que el
+# host acepte conexiones antes de arrancar los pods.
+#
+# `existingSecret` + `urlKey`: el organismo pone la **URL completa** en un Secret que administra
+# él (típico con un gestor tipo Vault) y el chart la consume por referencia, así la contraseña
+# no queda en el spec del pod. Sin él, la URL se arma acá y **la contraseña viaja en texto plano
+# en el env del pod** — límite conocido, pendiente del ítem de secrets de Fase E.
 externalDatabase:
   host: ""
+  port: 5432
+  username: teleflow
+  database: teleflow
+  password: ""
+  sslMode: ""             # p.ej. `require` o `verify-full`; vacío = sin TLS
+  existingSecret: ""
+  urlKey: DATABASE_URL
+
 externalRedis:
   host: ""
+  port: 6379
+  tls: false              # true = rediss://
+  existingSecret: ""
+  urlKey: REDIS_URL
+
 externalRabbitmq:
   host: ""
+  port: 5672
+  username: teleflow
+  password: ""
+  vhost: "/"
+  tls: false              # true = amqps://
+  existingSecret: ""
+  urlKey: RABBITMQ_URL
 
 # Réplicas según la sección 10.2 del documento de arquitectura
 # (docs/teleflow-deployment.typ).

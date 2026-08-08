@@ -335,6 +335,38 @@ El script distingue "la imagen no existe" (exit 1) de "no pude consultar el regi
 Sin credenciales, el rate limit anónimo de Docker Hub cae en el segundo caso: para evitarlo, el
 workflow hace login si están la variable `DOCKERHUB_USER` y el secreto `DOCKERHUB_TOKEN`.
 
+### Apoyarse en la capa de datos del organismo
+
+El chart instala Postgres, Redis y RabbitMQ propios (una réplica cada uno), que es lo razonable
+para desarrollo y una instalación chica. **Para producción, lo recomendado en el caso de Postgres
+es apuntar a la base administrada que el organismo ya opera**: tiene HA de verdad y gente de
+guardia, que es más de lo que puede dar cualquier manifiesto de este chart.
+
+```bash
+helm install teleflow helm/teleflow --set apiKey=... \
+  --set postgres.enabled=false \
+  --set externalDatabase.host=pg.organismo.gub.uy \
+  --set externalDatabase.port=6432 \
+  --set externalDatabase.username=teleflow --set externalDatabase.database=teleflow \
+  --set externalDatabase.sslMode=verify-full \
+  --set externalDatabase.existingSecret=teleflow-db --set externalDatabase.urlKey=DATABASE_URL
+```
+
+Cada bloque `external*` acepta `host` (obligatorio: los initContainers esperan a que acepte
+conexiones), `port`, credenciales propias, TLS opt-in (`sslMode` en Postgres, `tls` en Redis y
+RabbitMQ) y `existingSecret` + `urlKey`.
+
+**Con `existingSecret`, la URL completa la pone el organismo en un Secret que administra él y el
+chart la consume por referencia: la contraseña no aparece en el spec del pod.** Sin él, la URL se
+arma en el chart y la contraseña queda en texto plano en el env — hoy aparece **13 veces** en los
+manifiestos renderizados. Es el límite conocido que cierra el ítem de secrets de Fase E.
+
+Un `existingSecret` sin `urlKey` **corta el `helm install`** nombrando el bloque incompleto, en
+vez de dejar el pod en `CreateContainerConfigError` con el motivo escondido en sus eventos.
+
+El job `chart` de CI renderiza los cuatro modos (propio, externo, externo con Secret, externo a
+medio configurar) porque ninguno de esos fallos se ve leyendo el diff.
+
 ## Doc vs. código: discrepancias conocidas
 
 La doc consolidada (`.md` y PDF en `docs/`) es más vieja que los `.typ` y que el código. **Ante conflicto, el orden de verdad es: código > `.typ` > `.md`/README.**
