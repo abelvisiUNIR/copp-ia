@@ -130,7 +130,9 @@ migrations:
 
 # Capa de datos. Las imágenes son **las mismas del docker-compose.yml** a propósito: antes esto
 # eran tres subcharts de Bitnami y el compose usaba las oficiales, así que los e2e probaban una
-# capa de datos distinta de la de producción. Si cambia una, cambia la otra.
+# capa de datos distinta de la de producción. Si cambia una, cambia la otra: lo verifica
+# `tests/test_imagenes_contract.py`, así que un bump de un solo lado se pone rojo y no hay que
+# acordarse.
 #
 # Poner `enabled: false` y llenar el `external*.host` de arriba para usar una base que el
 # organismo ya administra.
