@@ -3,7 +3,7 @@ project: copp-ia
 type: roadmap
 provenance: copp-ia@devyos (código verificado en @13f2907)
 created: 2026-07-10
-updated: 2026-07-10
+updated: 2026-08-08
 tags: [roadmap, plan, guia]
 ---
 
@@ -150,9 +150,18 @@ Combinado y en este orden de madurez:
   El gateway dejó de ser `LoadBalancer` fijo (Service configurable + Ingress opt-in) y la
   `review-ui` **dejó de publicarse**: era la UI desde la que se aprueba y despliega código, y
   estaba potencialmente expuesta sin que nadie lo hubiera decidido. TLS sigue pendiente.
-- [ ] **Nuevo, sale del work-stream:** que el pipeline verifique que las imágenes referenciadas
-  **existen**. Una dependencia externa rompió un artefacto que nadie tocó y ni los tests ni el
-  lint lo vieron, porque el fallo ocurre al desplegar.
+- [x] **Que el pipeline verifique que las imágenes referenciadas existen** (hecho 2026-08-08 →
+  `verificacion-imagenes-pipeline`). Salió partido en dos, y esa fue la decisión del work-stream:
+  lo **determinista gatea los merges** (`tests/test_imagenes_contract.py`, sin red: que la capa
+  de datos use la misma imagen en el compose y en el chart —estaba declarada dos veces y nada
+  las ataba—, que el StatefulSet la tome de `values.yaml`, que ningún tag sea mutable) y lo que
+  **depende del registry corre programado** (`scripts/verificar_imagenes.py` +
+  `.github/workflows/imagenes.yml`, semanal, fuera de `ci.yml`). El trigger no se eligió por
+  costo sino por el modo de falla: el artefacto no cambia y la dependencia se rompe sola, así
+  que un job por `push` sería ciego por construcción — no hay push. El script distingue "no
+  existe" (exit 1) de "no pude consultar" (exit 2), porque un detector también puede fallar
+  **por ruidoso**: ver [[fallas-silenciosas]], modo gemelo del caso #14. **Límite consciente:**
+  las imágenes que publica cada organismo no se verifican (son de su registry, no del repo).
 - **Criterio de salida:** deploy reproducible por organismo (ADR-005) con checklist verde.
 
 ### Fase F — Futuro / opcional (Fase 4 del arquitecto)

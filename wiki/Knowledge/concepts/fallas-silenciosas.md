@@ -1,7 +1,7 @@
 ---
 project: copp-ia
 type: concept
-provenance: copp-ia@devyos@0b39edb
+provenance: copp-ia@devyos@b761dcd
 created: 2026-07-24
 updated: 2026-08-08
 tags: [concepto, calidad, resiliencia, observabilidad, patron]
@@ -9,11 +9,12 @@ tags: [concepto, calidad, resiliencia, observabilidad, patron]
 
 # Fallas silenciosas — el patrón que más veces apareció en este proyecto
 
-> Provenance: `copp-ia@devyos@029135e`. Sintetizado de **once** work-streams distintos
+> Provenance: `copp-ia@devyos@b761dcd`. Sintetizado de **doce** work-streams distintos
 > (`except-swallow-audit`, `limpieza-dx-openapi`, `observabilidad-negocio`,
 > `composer-llm-hardening`, `auditoria-persistida`, `registry-cobertura`,
 > `idempotencia-execute`, `review-ui-tests`, `estado-durable`, `fase-e-helm-kind`,
-> `alerta-up-metrics-service`) que encontraron el mismo problema con caras distintas.
+> `alerta-up-metrics-service`, `verificacion-imagenes-pipeline`) que encontraron el mismo
+> problema con caras distintas.
 
 ## Qué es
 Un mecanismo que **parece** estar protegiendo algo y no lo está, y que cuando falla **no
@@ -90,6 +91,16 @@ Dos variantes que conviene tener presentes, porque no se buscan igual:
   rules` — la diferencia es probar que **existe** versus probar que **funciona**, el mismo filo
   que separa `helm template` de instalar en un cluster. Regla práctica: cuando se construye un
   detector, hay que romperlo a propósito una vez y ver que grite.
+- **Y también puede fallar por ruidoso** (modo gemelo del anterior, 2026-08-08). Un detector que
+  reporta un hallazgo cuando en realidad **no pudo mirar** produce alarmas falsas, y con dos o
+  tres alcanza para que nadie vuelva a abrir el reporte: el resultado final es el mismo silencio
+  que arriba, por el camino opuesto. Apareció construyendo el chequeo de existencia de imágenes:
+  "la imagen no está en el registry" y "no pude hablar con el registry" son el mismo exit code
+  si uno no los separa, y el segundo caso llega solo —el rate limit anónimo de Docker Hub cortó
+  una corrida y devolvió 7 falsos faltantes en potencia—. Por eso el script distingue tres
+  desenlaces y los dos rojos dicen cosas distintas. La contracara: que el "no pude verificar"
+  **no** cortara sería volver al detector callado. Regla práctica: un detector necesita un
+  estado para *no sé*, y ese estado tiene que ser visible sin ser acusatorio.
 - **Una función que nunca falla puede estar corrompiendo un orden** (#7). `_semver_key`
   aceptaba cualquier string y siempre devolvía una tupla: esa tolerancia *era* el bug, porque
   el `1` de `rc1` terminaba sumado al número de patch. No hay excepción que atrapar ni log que
@@ -226,4 +237,6 @@ Work-streams `except-swallow-audit` (2026-07-14), `limpieza-dx-openapi` (2026-07
 [[2026-07-24-metricas-de-negocio-gauges]] · work-stream `alerta-up-metrics-service`
 (2026-07-31, caso 14: la frescura de los gauges y las alertas que la miran; y caso 15, el
 primero sobre el método de verificación y no sobre el sistema) · `.github/workflows/ci.yml`
-(el razonamiento del paso de `promtool`, comentado en el pipeline) · [[roadmap]]
+(el razonamiento del paso de `promtool`, comentado en el pipeline) ·
+work-stream `verificacion-imagenes-pipeline` (2026-08-08, el modo gemelo: el detector que falla
+por ruidoso) · `.github/workflows/imagenes.yml` · [[roadmap]]
