@@ -1,7 +1,7 @@
 ---
 project: copp-ia
 date: 2026-08-08
-status: proposed
+status: accepted
 provenance: copp-ia@devyos@84a4f4f
 tags: [adr, fase-e, ha, disponibilidad, rabbitmq, postgres, redis, kubernetes, helm]
 ---
@@ -11,8 +11,12 @@ tags: [adr, fase-e, ha, disponibilidad, rabbitmq, postgres, redis, kubernetes, h
 > Sale del work-stream [[ha-capa-de-datos]] (Fase E). **Complementa
 > [[2026-07-30-capa-de-datos-del-chart]]**, que decidió de dónde salen las imágenes y quién
 > declara los StatefulSets, y que dejó explícitamente afuera cuántos nodos tiene cada uno.
-> Se escribe en `proposed` porque **contradice la lectura literal de §10.2** del documento de
-> arquitectura: eso lo confirma el owner, no la evidencia técnica.
+> Se escribió en `proposed` porque **contradice la lectura literal de §10.2** del documento de
+> arquitectura: eso lo confirmaba el owner, no la evidencia técnica. **Aceptado el 2026-08-08**,
+> ya con el failover medido: matando el nodo que aloja la cola, la clásica pierde el mensaje
+> (1→0) y la quorum lo conserva (2→2). La parte que sí se construyó quedó demostrada; la que no
+> se construyó (patroni casero) se descartó por no poder demostrarse — que es el mismo criterio
+> aplicado en las dos direcciones.
 
 ## Context
 
@@ -64,7 +68,7 @@ para apoyarse en el HA que el organismo ya opera. En concreto:
 ## Rationale
 
 - **Un HA que no se puede demostrar fallando no es una garantía, es la próxima falla
-  silenciosa.** Este repo lleva quince casos de mecanismos que *parecían* proteger
+  silenciosa.** Este repo lleva dieciséis casos de mecanismos que *parecían* proteger
   ([[fallas-silenciosas]]). Un cluster de RabbitMQ se prueba en kind borrando el pod líder con un
   mensaje en vuelo. Un patroni escrito a mano —DCS, elección de líder, failover, promoción,
   fencing— no se prueba con honestidad en kind ni en un e2e de CI: entregaríamos un `replicas: 3`
@@ -89,9 +93,10 @@ para apoyarse en el HA que el organismo ya opera. En concreto:
 - **Hay migración de colas, y es obligatoria**: los argumentos de una cola son **inmutables**
   (gotcha ya pagado en `resiliencia-executor`), así que la cola pasa a `teleflow.rules.v2`. Sale
   barato porque el nombre ya es configurable y versionado (`common/config.py:68`).
-- **La instalación default deja de ser la de producción en un punto**: 3 nodos de RabbitMQ pesan
-  más que uno. Hay que decidir si el default del chart es 1 o 3 `(inferencia: probablemente 3 en
-  el chart y 1 por values de desarrollo, para que producción no dependa de acordarse)`.
+- **El default del chart es `rabbitmq.replicas: 3`** (resuelto al implementar): producción no
+  puede depender de que alguien se acuerde de subirlo, así que el que tiene que acordarse de
+  bajarlo es dev (`--set rabbitmq.replicas=1`). Con una réplica el cluster igual se forma —de un
+  nodo— y las colas quorum quedan con un solo replicante, que es lo que esa topología permite.
 - **`docs/teleflow-deployment.typ` §10.2 queda contradicha en un punto** (patroni) y hay que
   anotarlo en la tabla de discrepancias doc-vs-código del README, que existe justamente para esto.
 - **Postgres y Redis siguen siendo punto único de fallo** en la instalación default. Escrito acá

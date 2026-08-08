@@ -335,6 +335,31 @@ El script distingue "la imagen no existe" (exit 1) de "no pude consultar el regi
 Sin credenciales, el rate limit anónimo de Docker Hub cae en el segundo caso: para evitarlo, el
 workflow hace login si están la variable `DOCKERHUB_USER` y el secreto `DOCKERHUB_TOKEN`.
 
+### Alta disponibilidad de la capa de datos
+
+Lo que el chart entrega, y lo que deliberadamente no:
+
+| | Default | HA |
+|---|---|---|
+| RabbitMQ | **3 réplicas en cluster**, colas quorum | **sí, y probado**: matando el nodo que aloja la cola, una cola clásica pierde el mensaje y la quorum lo conserva |
+| Postgres | 1 réplica | **no** — se recomienda apuntar a la base administrada del organismo (abajo) |
+| Redis | 1 réplica | **no**, y es un punto único de fallo asumido |
+
+RabbitMQ es el único donde el HA **no se puede resolver desde afuera**: el tipo de cola lo
+declara la aplicación al declararla, así que un broker administrado en cluster seguiría teniendo
+colas clásicas —que viven en un solo nodo— si este código no pidiera quorum. Y ahí vive la DLQ,
+o sea justo lo que ya falló una vez y no se puede volver a perder.
+
+En Postgres y Redis pasa lo contrario: no hay nada que solo la plataforma pueda aportar, y un
+organismo que ya opera una base administrada tiene mejor HA del que daría cualquier manifiesto de
+este chart. Redis además guarda estado que **degrada** en vez de perderse (contadores de rate
+limit, pub/sub de revocación, estado compartido del gateway; el durable sleep vive en Postgres).
+
+El razonamiento completo y las alternativas descartadas están en el ADR de la wiki sobre el
+alcance del HA de la capa de datos (2026-08-08).
+
+Para desarrollo o un cluster de un solo nodo: `--set rabbitmq.replicas=1`.
+
 ### Apoyarse en la capa de datos del organismo
 
 El chart instala Postgres, Redis y RabbitMQ propios (una réplica cada uno), que es lo razonable

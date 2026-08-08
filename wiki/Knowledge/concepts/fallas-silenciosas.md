@@ -1,7 +1,7 @@
 ---
 project: copp-ia
 type: concept
-provenance: copp-ia@devyos@b761dcd
+provenance: copp-ia@devyos@ae923b6
 created: 2026-07-24
 updated: 2026-08-08
 tags: [concepto, calidad, resiliencia, observabilidad, patron]
@@ -9,12 +9,12 @@ tags: [concepto, calidad, resiliencia, observabilidad, patron]
 
 # Fallas silenciosas — el patrón que más veces apareció en este proyecto
 
-> Provenance: `copp-ia@devyos@b761dcd`. Sintetizado de **doce** work-streams distintos
+> Provenance: `copp-ia@devyos@ae923b6`. Sintetizado de **trece** work-streams distintos
 > (`except-swallow-audit`, `limpieza-dx-openapi`, `observabilidad-negocio`,
 > `composer-llm-hardening`, `auditoria-persistida`, `registry-cobertura`,
 > `idempotencia-execute`, `review-ui-tests`, `estado-durable`, `fase-e-helm-kind`,
-> `alerta-up-metrics-service`, `verificacion-imagenes-pipeline`) que encontraron el mismo
-> problema con caras distintas.
+> `alerta-up-metrics-service`, `verificacion-imagenes-pipeline`, `ha-capa-de-datos`) que
+> encontraron el mismo problema con caras distintas.
 
 ## Qué es
 Un mecanismo que **parece** estar protegiendo algo y no lo está, y que cuando falla **no
@@ -213,6 +213,29 @@ en lugar de un pull silencioso que anda de a ratos. Es la misma forma del fix de
 cuando un paso puede resolverse por dos caminos y solo uno es el que se está afirmando,
 prohibir el otro es lo que hace hablar al mecanismo.
 
+**Y un grado más: una verificación que no se ejecuta produce el mismo output que una que pasa**
+(caso 16, `ha-capa-de-datos`, 2026-08-08). El caso 15 es una comprobación que pasa por la causa
+equivocada; este es una que **no ocurrió**, y desde afuera se lee igual.
+
+Probando el failover del cluster de RabbitMQ hacía falta un control: matar el nodo que aloja una
+cola **clásica** y ver que sí pierde el mensaje, porque sin eso "la quorum sobrevivió" no
+distingue entre *el quorum funciona* y *el golpe no fue lo bastante fuerte*. El control se
+escribió sacando el nodo de la columna `leader`, que para colas clásicas **viene vacía**: el
+`grep` no encontró nada, el `delete pod ""` falló, y el "después" salió idéntico al "antes"
+**por no haber matado nada**. Leído rápido —dos tablas iguales, el mensaje ahí— se parecía
+bastante a un control que corrió bien.
+
+Es la forma más barata de fabricarse evidencia falsa, y no necesita ningún mecanismo roto: basta
+que el paso destructivo falle en silencio. Aparece en todo test que primero **busca** el objetivo
+y después lo rompe (un pod, un archivo, un registro, una fila): si la búsqueda devuelve vacío, lo
+que sigue no hace nada y el sistema queda intacto, que es exactamente lo que el test quería ver
+para el caso bueno.
+
+Regla práctica: **verificar el paso intermedio, no solo el resultado.** La pregunta no es "¿el
+mensaje sobrevivió?" sino "¿a quién maté?". Y cuando un paso destructivo toma un objetivo
+calculado, ese objetivo tiene que estar impreso o afirmado antes de usarlo — un `delete` con
+argumento vacío debería cortar, no seguir.
+
 ## Un pariente cercano, que no es lo mismo
 El supuesto **"esto corre en un solo proceso"** apareció cuatro veces en este repo y comparte el
 síntoma —degrada una garantía sin romper nada visible— pero tiene otra raíz: acá el mecanismo de
@@ -239,4 +262,6 @@ Work-streams `except-swallow-audit` (2026-07-14), `limpieza-dx-openapi` (2026-07
 primero sobre el método de verificación y no sobre el sistema) · `.github/workflows/ci.yml`
 (el razonamiento del paso de `promtool`, comentado en el pipeline) ·
 work-stream `verificacion-imagenes-pipeline` (2026-08-08, el modo gemelo: el detector que falla
-por ruidoso) · `.github/workflows/imagenes.yml` · [[roadmap]]
+por ruidoso) · `.github/workflows/imagenes.yml` · work-stream `ha-capa-de-datos` (2026-08-08,
+caso 16: el control que no se ejecutó) · [[2026-08-08-alcance-del-ha-de-la-capa-de-datos]] ·
+[[roadmap]]

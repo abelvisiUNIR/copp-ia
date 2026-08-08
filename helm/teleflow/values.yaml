@@ -192,6 +192,14 @@ redis:
   image: redis:7-alpine
   # Sin `persistence`: es cache y pub/sub, el durable sleep vive en Postgres (ADR-002).
   # Igual que en el compose, que tampoco le da volumen.
+  #
+  # **Una sola réplica, y es un punto único de fallo. Decidido, no olvidado.** §10.2 sugiere
+  # Sentinel; no se hizo porque (a) lo que Redis guarda acá no es estado de negocio —contadores
+  # de rate limit, pub/sub de revocación de keys, estado compartido del gateway—, así que
+  # perderlo **degrada** en vez de perder expedientes, y (b) Sentinel exige además cambiar el
+  # cliente: `aioredis.from_url()` no lo habla. Un organismo que quiera HA acá tiene el camino
+  # externo (`redis.enabled: false` + `externalRedis`), que es el mismo argumento que con
+  # Postgres. Ver el ADR de la wiki sobre el alcance del HA (2026-08-08).
   resources:
     requests:
       cpu: 50m

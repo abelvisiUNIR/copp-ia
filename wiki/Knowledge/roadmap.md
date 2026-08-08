@@ -129,10 +129,19 @@ Combinado y en este orden de madurez:
   **Medio hecho:** el chart crea el Secret o consume uno del organismo (`existingSecret`), y sin
   ninguno de los dos el install **falla diciendo cuál falta**. Sigue pendiente que los passwords
   de Postgres y RabbitMQ salgan de `values` en texto plano.
-- [ ] Readiness/liveness afinados; HPA del executor; StatefulSets Postgres/Redis/RabbitMQ en HA.
-  **Los StatefulSets ya son propios** (con las imágenes oficiales que usa el compose, así que dev
-  y producción comparten capa de datos). Falta el **HA** que recomienda §10.2: patroni, Sentinel y
-  quorum queues. Los probes existen en todos los servicios.
+- [x] **HA de la capa de datos (hecho 2026-08-08 → `ha-capa-de-datos`)**, con alcance
+  deliberadamente menor que la lectura literal de §10.2 y decidido en
+  [[2026-08-08-alcance-del-ha-de-la-capa-de-datos]]: la plataforma entrega HA **donde solo ella
+  puede hacerlo**. **RabbitMQ: cluster de 3 con quorum queues** (peer discovery de k8s, cookie
+  que sobrevive a los upgrades, RBAC de endpoints, anti-afinidad), y del lado del código la cola
+  y la DLQ declaradas `quorum` —el tipo lo fija quien declara, así que esto **no** se puede
+  resolver desde afuera— con migración `teleflow.rules.v1` → `v2`. **Probado en kind con
+  control:** matando el nodo que aloja la cola, la clásica pierde el mensaje (1→0) y la quorum lo
+  conserva (2→2). **Postgres y Redis: una réplica, escrito como decisión** — no se escribe un
+  patroni casero porque no se puede demostrar que funcione, y un organismo con base administrada
+  ya tiene mejor HA; para eso el **camino externo pasó a ser de primera clase** (puerto,
+  credenciales propias, TLS, `existingSecret` que saca la contraseña del spec del pod, y un
+  install que corta nombrando lo que falta). Los probes ya existían. **Falta: HPA del executor.**
 - [ ] Runbooks, backup/restore Postgres, disaster recovery, alertas Prometheus.
   Backup/restore ya está ([[estado-durable]]). **Observabilidad: el chart trae los puntos de
   integración** (anotaciones de scrape, `ServiceMonitor` y ConfigMap de dashboards, opt-in) y se
