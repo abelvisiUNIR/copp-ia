@@ -310,6 +310,31 @@ Las reglas tienen tests unitarios (`observability/alerts_test.yml`, `promtool te
 corren en CI. No son ceremonia: una alerta con un nombre de métrica mal escrito es
 sintácticamente válida y **nunca dispara**, que desde afuera se ve igual que un sistema sano.
 
+### Imágenes de contenedor referenciadas
+
+```bash
+python scripts/verificar_imagenes.py --listar   # enumera las referencias del repo, sin red
+python scripts/verificar_imagenes.py            # consulta el registry: ¿siguen existiendo?
+```
+
+Las imágenes se declaran en tres lugares (los `Dockerfile`, `docker-compose.yml` y
+`helm/teleflow/values.yaml`) y el script las enumera de los tres, sin lista escrita a mano.
+
+Dos chequeos distintos, a propósito:
+
+- **Lo determinista gatea los merges** (`tests/test_imagenes_contract.py`, sin red): que la capa
+  de datos use la **misma** imagen en el compose y en el chart —están declaradas dos veces y
+  nada más las mantenía sincronizadas—, que el StatefulSet la tome de `values.yaml` y que ningún
+  tag sea mutable.
+- **Lo que depende del registry corre programado** (`.github/workflows/imagenes.yml`, semanal) y
+  **no** bloquea merges. El motivo del trigger: las imágenes de los subcharts de Bitnami
+  desaparecieron de Docker Hub y rompieron el chart sin que nadie tocara un archivo — un
+  disparador por `push` no se habría enterado, porque no hubo push.
+
+El script distingue "la imagen no existe" (exit 1) de "no pude consultar el registry" (exit 2).
+Sin credenciales, el rate limit anónimo de Docker Hub cae en el segundo caso: para evitarlo, el
+workflow hace login si están la variable `DOCKERHUB_USER` y el secreto `DOCKERHUB_TOKEN`.
+
 ## Doc vs. código: discrepancias conocidas
 
 La doc consolidada (`.md` y PDF en `docs/`) es más vieja que los `.typ` y que el código. **Ante conflicto, el orden de verdad es: código > `.typ` > `.md`/README.**

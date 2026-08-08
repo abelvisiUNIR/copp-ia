@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from scripts.verificar_imagenes import es_del_organismo, referencias, referencias_de_dockerfile
+
 ROOT = Path(__file__).resolve().parent.parent
 COMPOSE = ROOT / "docker-compose.yml"
 VALUES = ROOT / "helm" / "teleflow" / "values.yaml"
@@ -106,3 +108,53 @@ def test_las_imagenes_de_datos_estan_ancladas_a_una_version(servicio: str):
 
     assert tag and tag != referencia, f"{servicio}: {referencia} no fija tag (implica 'latest')"
     assert tag != "latest", f"{servicio}: tag mutable 'latest' en {referencia}"
+
+
+# --- el enumerador del verificador -------------------------------------------------------
+# `scripts/verificar_imagenes.py` corre programado y contra el registry (ver
+# .github/workflows/imagenes.yml). Lo que se fija acá es lo que **no** depende de la red: que
+# enumere de verdad. Un enumerador que devuelve la lista vacía hace que el verificador salga en
+# verde sin haber verificado nada — el mismo silencio que ese script existe para romper.
+
+
+def test_el_enumerador_ve_las_tres_fuentes():
+    origenes = {ref.origen for ref in referencias()}
+
+    assert any("Dockerfile" in o for o in origenes), "no enumeró ningún FROM de Dockerfile"
+    assert any("docker-compose.yml" in o for o in origenes), "no enumeró el compose"
+    assert any("values.yaml" in o for o in origenes), "no enumeró los values del chart"
+
+
+def test_el_enumerador_cubre_la_capa_de_datos():
+    """Lo declarado en compose y chart tiene que terminar en la lista que se verifica: si el
+    enumerador se saltea justo esas, el chequeo programado no mira lo que se despliega."""
+    enumeradas = {ref.imagen for ref in referencias()}
+
+    for servicio, img in imagenes_del_chart().items():
+        if servicio in SERVICIOS_DE_DATOS:
+            assert img in enumeradas, f"{img} está en values.yaml pero el enumerador no la ve"
+
+
+def test_las_imagenes_del_organismo_se_reconocen_por_regla_explicita():
+    """El registry por defecto es un placeholder que no existe a propósito (ADR-005). Se saltea
+    por una regla nombrada; si se colara, el chequeo daría un 'no existe' que es correcto y
+    completamente inútil, y a la tercera semana nadie lo mira."""
+    assert es_del_organismo("registry.example.com/teleflow/teleflow:1.0.0")
+    assert not es_del_organismo("postgres:16-alpine")
+
+    del_organismo = [r.imagen for r in referencias() if es_del_organismo(r.imagen)]
+    assert del_organismo, "values.yaml ya no declara la imagen de la plataforma"
+
+
+def test_el_enumerador_saltea_las_etapas_de_un_build_multi_stage(tmp_path: Path):
+    """`FROM build` no es una imagen del registry, es la etapa de arriba. Contarla daría un
+    'no existe' falso — y una alarma falsa vale menos que ninguna alarma."""
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        "FROM node:20-alpine AS build\nRUN echo hola\nFROM build\nFROM nginx:1.27-alpine\n",
+        encoding="utf-8",
+    )
+
+    imagenes = [ref.imagen for ref in referencias_de_dockerfile(dockerfile)]
+
+    assert imagenes == ["node:20-alpine", "nginx:1.27-alpine"], imagenes
