@@ -114,7 +114,18 @@ gateway:
     className: ""
     host: teleflow.local
     annotations: {}
+    # TLS del borde. Con `enabled: true` es **obligatorio**, salvo que el organismo termine el
+    # TLS más arriba y lo declare con `allowInsecure: true`: publicar el gateway en claro manda
+    # la API key en un header. El `hosts` tiene que incluir `host` de arriba — si no coincide,
+    # el Ingress se crea igual y el controller sirve su certificado default.
+    #
+    #   tls:
+    #     - secretName: teleflow-tls
+    #       hosts: [teleflow.organismo.gub.uy]
+    #
+    # El Secret lo puede crear el organismo, o cert-manager por anotación en `annotations`.
     tls: []
+    allowInsecure: false
 
 reviewUi:
   enabled: true

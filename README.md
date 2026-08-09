@@ -335,6 +335,38 @@ El script distingue "la imagen no existe" (exit 1) de "no pude consultar el regi
 Sin credenciales, el rate limit anónimo de Docker Hub cae en el segundo caso: para evitarlo, el
 workflow hace login si están la variable `DOCKERHUB_USER` y el secreto `DOCKERHUB_TOKEN`.
 
+### TLS
+
+El Ingress del gateway exige TLS cuando está encendido:
+
+```bash
+helm install teleflow helm/teleflow --set apiKey=...   --set gateway.ingress.enabled=true   --set gateway.ingress.host=teleflow.organismo.gub.uy   --set gateway.ingress.tls[0].secretName=teleflow-tls   --set gateway.ingress.tls[0].hosts[0]=teleflow.organismo.gub.uy
+```
+
+El `helm install` **corta** en tres casos que antes pasaban sin ruido: Ingress sin bloque `tls`
+(el gateway quedaría en claro y la API key viaja en un header), una entrada de `tls` sin
+`secretName`, y un `hosts` que no incluye el `host` del Ingress — este último es el peor, porque
+el Ingress se crea perfecto, el controller sirve **su certificado default** y el error aparece
+recién en el navegador de un ciudadano como un fallo de nombre que nadie asocia con el values.
+
+Si el TLS lo termina un balanceador del organismo por delante, se declara:
+`--set gateway.ingress.allowInsecure=true`. Es explícito a propósito: quedar en claro puede ser
+correcto, pero no por olvido.
+
+El Secret del certificado lo crea el organismo, o cert-manager con una anotación en
+`gateway.ingress.annotations`.
+
+**Hacia la capa de datos** hay TLS opt-in en el camino externo: `externalDatabase.sslMode`,
+`externalRedis.tls` y `externalRabbitmq.tls`.
+
+**Límite consciente: no hay TLS entre los servicios internos.** El tráfico dentro del cluster
+(gateway → parser/executor/registry) va en claro. Emitir y rotar certificados por servicio es
+trabajo permanente de operación, y la forma estándar de resolverlo —un service mesh, o
+cert-manager con cambios en cada cliente HTTP— es infraestructura que el organismo instala y
+opera, no que este chart deba traer. Es el mismo criterio del ADR sobre el alcance del HA: la
+plataforma entrega lo que solo ella puede entregar. Si el organismo tiene mesh, esto se resuelve
+sin tocar el chart.
+
 ### Runbooks de operación
 
 Qué hacer cuando suena una alerta, cómo mirar la DLQ y cómo restaurar la base:
