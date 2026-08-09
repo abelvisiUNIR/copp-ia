@@ -12,9 +12,9 @@
   Si cambia una, tiene que cambiar la otra.
 
   Lo que traían los subcharts y NO se reescribió, para que no quede como hueco silencioso:
-  NetworkPolicies, PodDisruptionBudgets, ServiceAccounts dedicadas y el RBAC endpoint-reader de
-  RabbitMQ (que servía para clustering, y acá no hay cluster). Ninguno estaba pedido por la doc
-  ni por un ADR; entran cuando se aborde el HA de §10.2, que es su terreno.
+  NetworkPolicies y PodDisruptionBudgets. La ServiceAccount y el RBAC endpoint-reader de RabbitMQ
+  **sí se reescribieron** al hacer el cluster (2026-08-08, templates/rabbitmq-cluster.yaml): sin
+  ellos el peer discovery no puede preguntarle a la API por sus pares.
 */}}
 
 {{- if .Values.postgres.enabled }}
@@ -59,7 +59,10 @@ spec:
             - name: POSTGRES_USER
               value: {{ .Values.postgres.auth.username | quote }}
             - name: POSTGRES_PASSWORD
-              value: {{ .Values.postgres.auth.password | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "teleflow.datosSecretName" . }}
+                  key: POSTGRES_PASSWORD
             - name: POSTGRES_DB
               value: {{ .Values.postgres.auth.database | quote }}
             # El PVC se monta en /var/lib/postgresql/data y algunos provisioners dejan ahí un
@@ -246,7 +249,10 @@ spec:
             - name: RABBITMQ_DEFAULT_USER
               value: {{ .Values.rabbitmq.auth.username | quote }}
             - name: RABBITMQ_DEFAULT_PASS
-              value: {{ .Values.rabbitmq.auth.password | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "teleflow.datosSecretName" . }}
+                  key: RABBITMQ_PASSWORD
             {{/*
               El nombre del nodo tiene que ser estable y resoluble por los otros: `rabbit@<pod>`
               a secas no resuelve entre pods. Con el FQDN del headless Service, el nodo que

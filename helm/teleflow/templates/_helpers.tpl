@@ -138,6 +138,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
   Params: .nombre (DATABASE_URL|…), .ext (bloque external*), .url (URL ya armada).
 */}}
+{{/*
+  Secret con las credenciales de la capa de datos propia del chart. Aparte del de las API keys
+  porque aquel puede venir del organismo y tiene otro contrato (ver templates/secrets.yaml).
+*/}}
+{{- define "teleflow.datosSecretName" -}}
+{{- printf "%s-datos" .Release.Name -}}
+{{- end }}
+
 {{- define "teleflow.urlEnv" }}
 - name: {{ .nombre }}
 {{- if .ext.existingSecret }}
@@ -244,9 +252,18 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   propio, la URL la arma el chart y un `existingSecret` colgado en los values externos no
   debería cambiar nada (si lo hiciera, apagar `enabled` dejaría de ser el único interruptor).
 */}}
-{{- include "teleflow.urlEnv" (dict "nombre" "DATABASE_URL" "url" (include "teleflow.databaseUrl" .) "ext" (ternary (dict) .Values.externalDatabase .Values.postgres.enabled)) }}
+{{/*
+  Las URLs con contraseña adentro se leen del Secret en los dos casos: del que crea el chart si
+  la capa de datos es propia, del que administra el organismo si es externa. Nunca se
+  interpolan en el env del pod, que era donde quedaban a la vista de cualquiera con `get pod`.
+
+  `REDIS_URL` es la excepción y no por olvido: el Redis propio del chart no tiene contraseña
+  (no hay nada que ocultar), así que va como valor.
+*/}}
+{{- $secretoDatos := include "teleflow.datosSecretName" . }}
+{{- include "teleflow.urlEnv" (dict "nombre" "DATABASE_URL" "url" (include "teleflow.databaseUrl" .) "ext" (ternary (dict "existingSecret" $secretoDatos "urlKey" "DATABASE_URL") .Values.externalDatabase .Values.postgres.enabled)) }}
 {{- include "teleflow.urlEnv" (dict "nombre" "REDIS_URL" "url" (include "teleflow.redisUrl" .) "ext" (ternary (dict) .Values.externalRedis .Values.redis.enabled)) }}
-{{- include "teleflow.urlEnv" (dict "nombre" "RABBITMQ_URL" "url" (include "teleflow.rabbitmqUrl" .) "ext" (ternary (dict) .Values.externalRabbitmq .Values.rabbitmq.enabled)) }}
+{{- include "teleflow.urlEnv" (dict "nombre" "RABBITMQ_URL" "url" (include "teleflow.rabbitmqUrl" .) "ext" (ternary (dict "existingSecret" $secretoDatos "urlKey" "RABBITMQ_URL") .Values.externalRabbitmq .Values.rabbitmq.enabled)) }}
 - name: TELEFLOW_API_KEY
   valueFrom:
     secretKeyRef:

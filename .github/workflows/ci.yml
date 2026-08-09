@@ -183,6 +183,28 @@ jobs:
           echo "$conSecret" | grep -q 'key: "DATABASE_URL"' \
             || { echo "no se consume la URL del Secret del organismo"; exit 1; }
 
+          # La contraseña de la capa de datos propia tiene que existir SOLO dentro de su Secret.
+          # Antes se interpolaba en el env de cada pod y aparecía 28 veces, visible para
+          # cualquiera con permiso de `get pod`.
+          echo "--- la password de la capa de datos vive solo en su Secret ---"
+          conPass=$(render --set postgres.auth.password=P4SS --set rabbitmq.auth.password=R4BB)
+
+          # Las 4 esperadas son las claves del Secret (POSTGRES_PASSWORD, DATABASE_URL,
+          # RABBITMQ_PASSWORD, RABBITMQ_URL). Cualquier otra es una fuga.
+          apariciones=$(echo "$conPass" | grep -cE 'P4SS|R4BB')
+          if [ "$apariciones" -ne 4 ]; then
+            echo "la password aparece $apariciones veces; se esperaban 4 (las claves del Secret):"
+            echo "$conPass" | grep -nE 'P4SS|R4BB'
+            exit 1
+          fi
+
+          # Y ninguna puede estar en un `value:`, que es como llega al spec del pod.
+          if echo "$conPass" | grep -E 'P4SS|R4BB' | grep -q 'value:'; then
+            echo "hay una password interpolada en el env de un pod:"
+            echo "$conPass" | grep -nE 'P4SS|R4BB' | grep 'value:'
+            exit 1
+          fi
+
           echo "--- externo a medio configurar: tiene que fallar y decir qué falta ---"
           if render --set postgres.enabled=false --set externalDatabase.host=pg.ext \
                --set externalDatabase.existingSecret=pg-creds --set externalDatabase.urlKey= \

@@ -388,9 +388,11 @@ conexiones), `port`, credenciales propias, TLS opt-in (`sslMode` en Postgres, `t
 RabbitMQ) y `existingSecret` + `urlKey`.
 
 **Con `existingSecret`, la URL completa la pone el organismo en un Secret que administra él y el
-chart la consume por referencia: la contraseña no aparece en el spec del pod.** Sin él, la URL se
-arma en el chart y la contraseña queda en texto plano en el env — hoy aparece **13 veces** en los
-manifiestos renderizados. Es el límite conocido que cierra el ítem de secrets de Fase E.
+chart la consume por referencia.** Sin él, la URL se arma en el chart — pero tampoco queda en el
+spec del pod: va a un Secret propio de la capa de datos (`<release>-datos`) que los pods
+referencian. La contraseña existe **solo** ahí: cuatro claves, ninguna interpolada en un env
+(antes eran 28 apariciones repartidas por todos los pods). Lo que `existingSecret` agrega es que
+el valor tampoco esté en `values.yaml` al instalar.
 
 Un `existingSecret` sin `urlKey` **corta el `helm install`** nombrando el bloque incompleto, en
 vez de dejar el pod en `CreateContainerConfigError` con el motivo escondido en sus eventos.
