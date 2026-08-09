@@ -27,13 +27,47 @@ env:
   LLM_PROVIDER: stub
   WORKER_CONCURRENCY: "10"
 
-# Solo se usan con el subchart correspondiente en `enabled: false`.
+# Capa de datos administrada por el organismo. Se usa poniendo en `false` el `enabled` del
+# componente de abajo (`postgres.enabled: false`, …).
+#
+# Este es el camino recomendado para producción en el caso de Postgres: un organismo que ya
+# opera una base administrada tiene HA de verdad, con guardia que la atiende, y eso es mejor que
+# cualquier cosa que declare este chart. Ver el ADR de la wiki "hasta dónde llega el HA de la
+# capa de datos que entrega la plataforma" (2026-08-08).
+#
+# `host` es obligatorio aun con `existingSecret`, porque los initContainers esperan a que el
+# host acepte conexiones antes de arrancar los pods.
+#
+# `existingSecret` + `urlKey`: el organismo pone la **URL completa** en un Secret que administra
+# él (típico con un gestor tipo Vault) y el chart la consume por referencia, así la contraseña
+# no queda en el spec del pod. Sin él, la URL se arma acá y **la contraseña viaja en texto plano
+# en el env del pod** — límite conocido, pendiente del ítem de secrets de Fase E.
 externalDatabase:
   host: ""
+  port: 5432
+  username: teleflow
+  database: teleflow
+  password: ""
+  sslMode: ""             # p.ej. `require` o `verify-full`; vacío = sin TLS
+  existingSecret: ""
+  urlKey: DATABASE_URL
+
 externalRedis:
   host: ""
+  port: 6379
+  tls: false              # true = rediss://
+  existingSecret: ""
+  urlKey: REDIS_URL
+
 externalRabbitmq:
   host: ""
+  port: 5672
+  username: teleflow
+  password: ""
+  vhost: "/"
+  tls: false              # true = amqps://
+  existingSecret: ""
+  urlKey: RABBITMQ_URL
 
 # Réplicas según la sección 10.2 del documento de arquitectura
 # (docs/teleflow-deployment.typ).
@@ -80,7 +114,18 @@ gateway:
     className: ""
     host: teleflow.local
     annotations: {}
+    # TLS del borde. Con `enabled: true` es **obligatorio**, salvo que el organismo termine el
+    # TLS más arriba y lo declare con `allowInsecure: true`: publicar el gateway en claro manda
+    # la API key en un header. El `hosts` tiene que incluir `host` de arriba — si no coincide,
+    # el Ingress se crea igual y el controller sirve su certificado default.
+    #
+    #   tls:
+    #     - secretName: teleflow-tls
+    #       hosts: [teleflow.organismo.gub.uy]
+    #
+    # El Secret lo puede crear el organismo, o cert-manager por anotación en `annotations`.
     tls: []
+    allowInsecure: false
 
 reviewUi:
   enabled: true
@@ -130,7 +175,9 @@ migrations:
 
 # Capa de datos. Las imágenes son **las mismas del docker-compose.yml** a propósito: antes esto
 # eran tres subcharts de Bitnami y el compose usaba las oficiales, así que los e2e probaban una
-# capa de datos distinta de la de producción. Si cambia una, cambia la otra.
+# capa de datos distinta de la de producción. Si cambia una, cambia la otra: lo verifica
+# `tests/test_imagenes_contract.py`, así que un bump de un solo lado se pone rojo y no hay que
+# acordarse.
 #
 # Poner `enabled: false` y llenar el `external*.host` de arriba para usar una base que el
 # organismo ya administra.
@@ -156,6 +203,14 @@ redis:
   image: redis:7-alpine
   # Sin `persistence`: es cache y pub/sub, el durable sleep vive en Postgres (ADR-002).
   # Igual que en el compose, que tampoco le da volumen.
+  #
+  # **Una sola réplica, y es un punto único de fallo. Decidido, no olvidado.** §10.2 sugiere
+  # Sentinel; no se hizo porque (a) lo que Redis guarda acá no es estado de negocio —contadores
+  # de rate limit, pub/sub de revocación de keys, estado compartido del gateway—, así que
+  # perderlo **degrada** en vez de perder expedientes, y (b) Sentinel exige además cambiar el
+  # cliente: `aioredis.from_url()` no lo habla. Un organismo que quiera HA acá tiene el camino
+  # externo (`redis.enabled: false` + `externalRedis`), que es el mismo argumento que con
+  # Postgres. Ver el ADR de la wiki sobre el alcance del HA (2026-08-08).
   resources:
     requests:
       cpu: 50m
@@ -166,6 +221,15 @@ redis:
 rabbitmq:
   enabled: true
   image: rabbitmq:3.13-management-alpine
+  # 3 por default, como pide §10.2 — y a propósito **no** 1: si producción tuviera que acordarse
+  # de subirlo, el default sería un punto único de fallo silencioso. Para dev o un cluster de un
+  # solo nodo (kind), `--set rabbitmq.replicas=1`: forma cluster de uno y las colas quorum
+  # quedan con un solo replicante, que es lo que se puede dar en esa topología.
+  replicas: 3
+  # Credencial con la que los nodos se autentican entre sí. Vacío = el chart genera una y
+  # **la conserva** entre upgrades (ver templates/rabbitmq-cluster.yaml). Fijarla acá solo si
+  # el organismo la administra por fuera.
+  erlangCookie: ""
   auth:
     username: teleflow
     password: teleflow      # ← pendiente Fase E: sacarlo de values a un Secret

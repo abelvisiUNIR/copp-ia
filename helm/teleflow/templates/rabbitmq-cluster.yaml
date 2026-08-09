@@ -1,0 +1,133 @@
+{{/*
+  Lo que hace falta para que los tres RabbitMQ sean UN cluster y no tres brokers sueltos.
+
+  Va en un archivo aparte de `datos.yaml` porque son piezas de una sola cosa (descubrirse,
+  autenticarse entre nodos y saber a quién buscar) y porque el StatefulSet referencia el
+  checksum de este archivo para rotar los pods cuando la config cambia.
+
+  Nada de esto se instala si `rabbitmq.enabled=false`: con un broker del organismo, el cluster
+  lo arma el organismo.
+*/}}
+{{- if .Values.rabbitmq.enabled }}
+{{/*
+  Service headless: le da a cada pod un DNS estable
+  (`<release>-rabbitmq-0.<release>-rabbitmq-headless.<ns>.svc.cluster.local`). El Service normal
+  balancea entre pods y por eso no sirve para que un nodo le hable a otro **en particular**, que
+  es lo que necesitan tanto el peer discovery como el nombre del nodo Erlang.
+
+  El `serviceName` del StatefulSet apuntaba al Service ClusterIP, que nunca dio ese DNS por pod:
+  con una sola réplica no se notaba porque nadie lo usaba.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "teleflow.rabbitmqHost" . }}-headless
+  labels:
+    {{- include "teleflow.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  # Un nodo tiene que poder encontrar a sus pares mientras todavía no están Ready — si no, la
+  # formación del cluster espera a que estén listos y estar listo depende de formar el cluster.
+  publishNotReadyAddresses: true
+  selector:
+    app: {{ include "teleflow.rabbitmqHost" . }}
+  ports:
+    - name: amqp
+      port: 5672
+    - name: epmd
+      port: 4369
+    - name: dist
+      port: 25672
+---
+{{/*
+  La cookie Erlang es la credencial con la que los nodos se autentican entre sí: si dos nodos no
+  la comparten, no forman cluster (y el síntoma es un error de handshake, no algo obvio).
+
+  El orden importa y es el punto delicado: **primero se reusa la que ya está instalada**. Si se
+  generara una nueva en cada `helm upgrade`, los nodos que reinicien dejarían de reconocer a los
+  que no reiniciaron y el cluster se partiría — un upgrade que Helm reporta como exitoso
+  rompiendo la agrupación en silencio.
+*/}}
+{{- $nombreCookie := printf "%s-cookie" (include "teleflow.rabbitmqHost" .) }}
+{{- $existente := lookup "v1" "Secret" .Release.Namespace $nombreCookie }}
+{{- $cookie := "" }}
+{{- if and $existente $existente.data }}
+{{- $cookie = index $existente.data "cookie" | b64dec }}
+{{- else if .Values.rabbitmq.erlangCookie }}
+{{- $cookie = .Values.rabbitmq.erlangCookie }}
+{{- else }}
+{{- $cookie = randAlphaNum 32 }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $nombreCookie }}
+  labels:
+    {{- include "teleflow.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  cookie: {{ $cookie | quote }}
+---
+{{/*
+  El peer discovery de Kubernetes le pregunta a la API por los endpoints del Service headless
+  para saber qué otros nodos existen. Eso exige permiso explícito: es lo que los subcharts de
+  Bitnami traían como "endpoint-reader" y que el ADR de la capa de datos anotó como deuda al
+  salir de ellos.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "teleflow.rabbitmqHost" . }}
+  labels:
+    {{- include "teleflow.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "teleflow.rabbitmqHost" . }}-endpoint-reader
+  labels:
+    {{- include "teleflow.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "teleflow.rabbitmqHost" . }}-endpoint-reader
+  labels:
+    {{- include "teleflow.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "teleflow.rabbitmqHost" . }}-endpoint-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "teleflow.rabbitmqHost" . }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "teleflow.rabbitmqHost" . }}-cluster
+  labels:
+    {{- include "teleflow.labels" . | nindent 4 }}
+data:
+  enabled_plugins: |
+    [rabbitmq_management,rabbitmq_peer_discovery_k8s].
+  rabbitmq.conf: |
+    cluster_formation.peer_discovery_backend = k8s
+    cluster_formation.k8s.host = kubernetes.default.svc.cluster.local
+    # `hostname` y no `ip`: el nombre del nodo se arma con el DNS del pod, así que la dirección
+    # que reporta el discovery tiene que ser la misma o los nodos no se reconocen.
+    cluster_formation.k8s.address_type = hostname
+    cluster_formation.k8s.service_name = {{ include "teleflow.rabbitmqHost" . }}-headless
+    cluster_formation.k8s.hostname_suffix = .{{ include "teleflow.rabbitmqHost" . }}-headless.{{ .Release.Namespace }}.svc.cluster.local
+    # Un nodo que vuelve y no encuentra a nadie NO arranca solo: prefiere esperar antes que
+    # formar un cluster nuevo por su cuenta, que es como se termina con dos mitades que se
+    # creen ambas el cluster bueno.
+    cluster_formation.discovery_retry_limit = 10
+    cluster_formation.discovery_retry_interval = 5000
+    cluster_partition_handling = pause_minority
+    queue_master_locator = min-masters
+{{- end }}

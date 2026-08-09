@@ -31,6 +31,12 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   Antes estaban hardcodeados en values.yaml como `teleflow-postgresql`, lo que ataba el chart
   a instalarse con el release name `teleflow` sin decirlo en ninguna parte.
 */}}
+{{/*
+  `host` se exige siempre en modo externo, incluso con `existingSecret`: los initContainers
+  esperan a que el host acepte conexiones, y esa espera no puede salir de una URL que el chart
+  no lee. El mensaje nombra la clave que falta — el install falla en `helm install` y no seis
+  minutos después con pods en CrashLoop.
+*/}}
 {{- define "teleflow.postgresHost" -}}
 {{- if .Values.postgres.enabled -}}
 {{- printf "%s-postgres" .Release.Name -}}
@@ -55,8 +61,101 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end }}
 
+{{/*
+  Un `existingSecret` sin `urlKey` renderiza un `secretKeyRef` con la clave vacía: el pod queda
+  en `CreateContainerConfigError` y el motivo hay que ir a buscarlo a los eventos del pod. Se
+  corta acá, con el nombre del bloque que está a medio configurar.
+*/}}
+{{- define "teleflow.validarExternos" -}}
+{{- range $nombre, $ext := dict "externalDatabase" .Values.externalDatabase "externalRedis" .Values.externalRedis "externalRabbitmq" .Values.externalRabbitmq }}
+{{- if and $ext.existingSecret (not $ext.urlKey) }}
+{{- fail (printf "\n\n%s.existingSecret está puesto pero %s.urlKey está vacío: no se sabe qué clave del Secret leer.\n" $nombre $nombre) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+  Puertos de la capa de datos. Con el componente propio son los del contenedor; con uno externo
+  los decide el organismo (un Postgres administrado detrás de un pooler no escucha en 5432).
+  Estaban fijos en las URLs y en el initContainer, que es justo lo que rompía el camino externo.
+*/}}
+{{- define "teleflow.postgresPort" -}}
+{{- if .Values.postgres.enabled -}}5432{{- else -}}{{ .Values.externalDatabase.port }}{{- end -}}
+{{- end }}
+
+{{- define "teleflow.redisPort" -}}
+{{- if .Values.redis.enabled -}}6379{{- else -}}{{ .Values.externalRedis.port }}{{- end -}}
+{{- end }}
+
+{{- define "teleflow.rabbitmqPort" -}}
+{{- if .Values.rabbitmq.enabled -}}5672{{- else -}}{{ .Values.externalRabbitmq.port }}{{- end -}}
+{{- end }}
+
+{{/*
+  URLs de la capa de datos.
+
+  Las credenciales salen del bloque que corresponde: con el componente propio, de `<comp>.auth`;
+  con uno externo, de `external<Comp>`. Antes salían siempre de `<comp>.auth` aunque el
+  componente estuviera en `enabled: false`, así que una base del organismo con otro usuario no
+  se podía configurar sin ensuciar los values del componente que no se instala.
+
+  El TLS es opt-in y explícito (`sslMode`, `tls`): un `require` puesto por default rompería
+  cualquier instalación chica sin certificados, y un default sin TLS que no se pueda cambiar
+  deja al organismo sin forma de cumplir su propia política.
+*/}}
 {{- define "teleflow.databaseUrl" -}}
-{{- printf "postgresql+asyncpg://%s:%s@%s:5432/%s" .Values.postgres.auth.username .Values.postgres.auth.password (include "teleflow.postgresHost" .) .Values.postgres.auth.database -}}
+{{- if .Values.postgres.enabled -}}
+{{- printf "postgresql+asyncpg://%s:%s@%s:%s/%s" .Values.postgres.auth.username .Values.postgres.auth.password (include "teleflow.postgresHost" .) (include "teleflow.postgresPort" .) .Values.postgres.auth.database -}}
+{{- else -}}
+{{- $e := .Values.externalDatabase -}}
+{{- $base := printf "postgresql+asyncpg://%s:%s@%s:%v/%s" $e.username $e.password $e.host $e.port $e.database -}}
+{{- if $e.sslMode }}{{ printf "%s?ssl=%s" $base $e.sslMode }}{{ else }}{{ $base }}{{ end -}}
+{{- end -}}
+{{- end }}
+
+{{- define "teleflow.redisUrl" -}}
+{{- if .Values.redis.enabled -}}
+{{- printf "redis://%s:6379/0" (include "teleflow.redisHost" .) -}}
+{{- else -}}
+{{- $e := .Values.externalRedis -}}
+{{- printf "%s://%s:%v/0" (ternary "rediss" "redis" $e.tls) $e.host $e.port -}}
+{{- end -}}
+{{- end }}
+
+{{- define "teleflow.rabbitmqUrl" -}}
+{{- if .Values.rabbitmq.enabled -}}
+{{- printf "amqp://%s:%s@%s:5672/" .Values.rabbitmq.auth.username .Values.rabbitmq.auth.password (include "teleflow.rabbitmqHost" .) -}}
+{{- else -}}
+{{- $e := .Values.externalRabbitmq -}}
+{{- printf "%s://%s:%s@%s:%v/%s" (ternary "amqps" "amqp" $e.tls) $e.username $e.password $e.host $e.port (trimPrefix "/" $e.vhost) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+  Una variable de la capa de datos: por referencia al Secret del organismo si lo hay, y si no
+  con la URL armada arriba. El `secretKeyRef` es lo que permite que la contraseña de una base
+  administrada **no** aparezca en el spec del pod.
+
+  Params: .nombre (DATABASE_URL|…), .ext (bloque external*), .url (URL ya armada).
+*/}}
+{{/*
+  Secret con las credenciales de la capa de datos propia del chart. Aparte del de las API keys
+  porque aquel puede venir del organismo y tiene otro contrato (ver templates/secrets.yaml).
+*/}}
+{{- define "teleflow.datosSecretName" -}}
+{{- printf "%s-datos" .Release.Name -}}
+{{- end }}
+
+{{- define "teleflow.urlEnv" }}
+- name: {{ .nombre }}
+{{- if .ext.existingSecret }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ .ext.existingSecret | quote }}
+      key: {{ .ext.urlKey | quote }}
+{{- else }}
+  value: {{ .url | quote }}
+{{- end }}
 {{- end }}
 
 {{/*
@@ -91,7 +190,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
     - -c
     - |
       import socket, sys, time
-      host, port = "{{ include "teleflow.postgresHost" . }}", 5432
+      host, port = "{{ include "teleflow.postgresHost" . }}", {{ include "teleflow.postgresPort" . }}
       plazo = time.monotonic() + {{ .Values.migrations.waitForDbSeconds }}
       while time.monotonic() < plazo:
           try:
@@ -142,17 +241,29 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{- define "teleflow.env" -}}
+{{- include "teleflow.validarExternos" . }}
 {{- range $key, $value := .Values.env }}
 - name: {{ $key }}
   value: {{ $value | quote }}
 {{- end }}
 {{- include "teleflow.serviceUrls" . }}
-- name: DATABASE_URL
-  value: {{ include "teleflow.databaseUrl" . | quote }}
-- name: REDIS_URL
-  value: {{ printf "redis://%s:6379/0" (include "teleflow.redisHost" .) | quote }}
-- name: RABBITMQ_URL
-  value: {{ printf "amqp://%s:%s@%s:5672/" .Values.rabbitmq.auth.username .Values.rabbitmq.auth.password (include "teleflow.rabbitmqHost" .) | quote }}
+{{/*
+  El Secret del organismo solo se consulta cuando el componente es externo: con el componente
+  propio, la URL la arma el chart y un `existingSecret` colgado en los values externos no
+  debería cambiar nada (si lo hiciera, apagar `enabled` dejaría de ser el único interruptor).
+*/}}
+{{/*
+  Las URLs con contraseña adentro se leen del Secret en los dos casos: del que crea el chart si
+  la capa de datos es propia, del que administra el organismo si es externa. Nunca se
+  interpolan en el env del pod, que era donde quedaban a la vista de cualquiera con `get pod`.
+
+  `REDIS_URL` es la excepción y no por olvido: el Redis propio del chart no tiene contraseña
+  (no hay nada que ocultar), así que va como valor.
+*/}}
+{{- $secretoDatos := include "teleflow.datosSecretName" . }}
+{{- include "teleflow.urlEnv" (dict "nombre" "DATABASE_URL" "url" (include "teleflow.databaseUrl" .) "ext" (ternary (dict "existingSecret" $secretoDatos "urlKey" "DATABASE_URL") .Values.externalDatabase .Values.postgres.enabled)) }}
+{{- include "teleflow.urlEnv" (dict "nombre" "REDIS_URL" "url" (include "teleflow.redisUrl" .) "ext" (ternary (dict) .Values.externalRedis .Values.redis.enabled)) }}
+{{- include "teleflow.urlEnv" (dict "nombre" "RABBITMQ_URL" "url" (include "teleflow.rabbitmqUrl" .) "ext" (ternary (dict "existingSecret" $secretoDatos "urlKey" "RABBITMQ_URL") .Values.externalRabbitmq .Values.rabbitmq.enabled)) }}
 - name: TELEFLOW_API_KEY
   valueFrom:
     secretKeyRef:

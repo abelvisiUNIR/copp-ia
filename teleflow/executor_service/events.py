@@ -37,6 +37,18 @@ EventCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 MAX_BACKOFF_SECONDS = 30.0
 
+# Colas replicadas por consenso: sobreviven a que se caiga el nodo donde vivían. Una cola
+# clásica vive en **un** nodo por más que el cluster tenga tres, así que sin esto la DLQ y los
+# eventos de rules siguen teniendo un único punto de fallo aunque el broker esté en cluster.
+#
+# Esto no se puede resolver desde afuera: el tipo lo fija quien **declara** la cola, y eso es
+# este código. Un RabbitMQ administrado en cluster no convierte una cola clásica en quorum.
+#
+# Los argumentos de una cola son **inmutables**: cambiar esto en una cola que ya existe hace
+# fallar la declaración con PRECONDITION_FAILED. Por eso el nombre está versionado en
+# `Settings.rules_queue` y esta migración es `v1` -> `v2`.
+QUORUM: dict[str, Any] = {"x-queue-type": "quorum"}
+
 
 class EventBus:
     def __init__(self, url: str, exchange_name: str = "teleflow.domain.events",
@@ -111,11 +123,16 @@ class EventBus:
 
         queue = await self._channel.declare_queue(
             queue_name, durable=True,
-            arguments={"x-dead-letter-exchange": self._dlx_name},
+            arguments={"x-dead-letter-exchange": self._dlx_name, **QUORUM},
         )
         await queue.bind(self._exchange, routing_key="#")
 
-        dlq = await self._channel.declare_queue(f"{queue_name}.dlq", durable=True)
+        # La DLQ también quorum: es donde terminan los eventos que ya fallaron, o sea justo lo
+        # que no se puede volver a perder. Una DLQ clásica en un cluster vive en un nodo y se va
+        # con él.
+        dlq = await self._channel.declare_queue(
+            f"{queue_name}.dlq", durable=True, arguments=dict(QUORUM),
+        )
         await dlq.bind(self._dlx, routing_key="#")
         log.info("event_consumer_started", queue=queue_name, dlq=f"{queue_name}.dlq")
 

@@ -3,7 +3,7 @@ project: copp-ia
 type: roadmap
 provenance: copp-ia@devyos (código verificado en @13f2907)
 created: 2026-07-10
-updated: 2026-07-10
+updated: 2026-08-08
 tags: [roadmap, plan, guia]
 ---
 
@@ -129,10 +129,19 @@ Combinado y en este orden de madurez:
   **Medio hecho:** el chart crea el Secret o consume uno del organismo (`existingSecret`), y sin
   ninguno de los dos el install **falla diciendo cuál falta**. Sigue pendiente que los passwords
   de Postgres y RabbitMQ salgan de `values` en texto plano.
-- [ ] Readiness/liveness afinados; HPA del executor; StatefulSets Postgres/Redis/RabbitMQ en HA.
-  **Los StatefulSets ya son propios** (con las imágenes oficiales que usa el compose, así que dev
-  y producción comparten capa de datos). Falta el **HA** que recomienda §10.2: patroni, Sentinel y
-  quorum queues. Los probes existen en todos los servicios.
+- [x] **HA de la capa de datos (hecho 2026-08-08 → `ha-capa-de-datos`)**, con alcance
+  deliberadamente menor que la lectura literal de §10.2 y decidido en
+  [[2026-08-08-alcance-del-ha-de-la-capa-de-datos]]: la plataforma entrega HA **donde solo ella
+  puede hacerlo**. **RabbitMQ: cluster de 3 con quorum queues** (peer discovery de k8s, cookie
+  que sobrevive a los upgrades, RBAC de endpoints, anti-afinidad), y del lado del código la cola
+  y la DLQ declaradas `quorum` —el tipo lo fija quien declara, así que esto **no** se puede
+  resolver desde afuera— con migración `teleflow.rules.v1` → `v2`. **Probado en kind con
+  control:** matando el nodo que aloja la cola, la clásica pierde el mensaje (1→0) y la quorum lo
+  conserva (2→2). **Postgres y Redis: una réplica, escrito como decisión** — no se escribe un
+  patroni casero porque no se puede demostrar que funcione, y un organismo con base administrada
+  ya tiene mejor HA; para eso el **camino externo pasó a ser de primera clase** (puerto,
+  credenciales propias, TLS, `existingSecret` que saca la contraseña del spec del pod, y un
+  install que corta nombrando lo que falta). Los probes ya existían. **Falta: HPA del executor.**
 - [ ] Runbooks, backup/restore Postgres, disaster recovery, alertas Prometheus.
   Backup/restore ya está ([[estado-durable]]). **Observabilidad: el chart trae los puntos de
   integración** (anotaciones de scrape, `ServiceMonitor` y ConfigMap de dashboards, opt-in) y se
@@ -150,9 +159,18 @@ Combinado y en este orden de madurez:
   El gateway dejó de ser `LoadBalancer` fijo (Service configurable + Ingress opt-in) y la
   `review-ui` **dejó de publicarse**: era la UI desde la que se aprueba y despliega código, y
   estaba potencialmente expuesta sin que nadie lo hubiera decidido. TLS sigue pendiente.
-- [ ] **Nuevo, sale del work-stream:** que el pipeline verifique que las imágenes referenciadas
-  **existen**. Una dependencia externa rompió un artefacto que nadie tocó y ni los tests ni el
-  lint lo vieron, porque el fallo ocurre al desplegar.
+- [x] **Que el pipeline verifique que las imágenes referenciadas existen** (hecho 2026-08-08 →
+  `verificacion-imagenes-pipeline`). Salió partido en dos, y esa fue la decisión del work-stream:
+  lo **determinista gatea los merges** (`tests/test_imagenes_contract.py`, sin red: que la capa
+  de datos use la misma imagen en el compose y en el chart —estaba declarada dos veces y nada
+  las ataba—, que el StatefulSet la tome de `values.yaml`, que ningún tag sea mutable) y lo que
+  **depende del registry corre programado** (`scripts/verificar_imagenes.py` +
+  `.github/workflows/imagenes.yml`, semanal, fuera de `ci.yml`). El trigger no se eligió por
+  costo sino por el modo de falla: el artefacto no cambia y la dependencia se rompe sola, así
+  que un job por `push` sería ciego por construcción — no hay push. El script distingue "no
+  existe" (exit 1) de "no pude consultar" (exit 2), porque un detector también puede fallar
+  **por ruidoso**: ver [[fallas-silenciosas]], modo gemelo del caso #14. **Límite consciente:**
+  las imágenes que publica cada organismo no se verifican (son de su registry, no del repo).
 - **Criterio de salida:** deploy reproducible por organismo (ADR-005) con checklist verde.
 
 ### Fase F — Futuro / opcional (Fase 4 del arquitecto)

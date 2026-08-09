@@ -1,19 +1,20 @@
 ---
 project: copp-ia
 type: concept
-provenance: copp-ia@devyos@029135e
+provenance: copp-ia@devyos@ae923b6
 created: 2026-07-24
-updated: 2026-07-31
+updated: 2026-08-08
 tags: [concepto, calidad, resiliencia, observabilidad, patron]
 ---
 
 # Fallas silenciosas — el patrón que más veces apareció en este proyecto
 
-> Provenance: `copp-ia@devyos@029135e`. Sintetizado de **once** work-streams distintos
+> Provenance: `copp-ia@devyos@ae923b6`. Sintetizado de **trece** work-streams distintos
 > (`except-swallow-audit`, `limpieza-dx-openapi`, `observabilidad-negocio`,
 > `composer-llm-hardening`, `auditoria-persistida`, `registry-cobertura`,
 > `idempotencia-execute`, `review-ui-tests`, `estado-durable`, `fase-e-helm-kind`,
-> `alerta-up-metrics-service`) que encontraron el mismo problema con caras distintas.
+> `alerta-up-metrics-service`, `verificacion-imagenes-pipeline`, `ha-capa-de-datos`) que
+> encontraron el mismo problema con caras distintas.
 
 ## Qué es
 Un mecanismo que **parece** estar protegiendo algo y no lo está, y que cuando falla **no
@@ -90,6 +91,16 @@ Dos variantes que conviene tener presentes, porque no se buscan igual:
   rules` — la diferencia es probar que **existe** versus probar que **funciona**, el mismo filo
   que separa `helm template` de instalar en un cluster. Regla práctica: cuando se construye un
   detector, hay que romperlo a propósito una vez y ver que grite.
+- **Y también puede fallar por ruidoso** (modo gemelo del anterior, 2026-08-08). Un detector que
+  reporta un hallazgo cuando en realidad **no pudo mirar** produce alarmas falsas, y con dos o
+  tres alcanza para que nadie vuelva a abrir el reporte: el resultado final es el mismo silencio
+  que arriba, por el camino opuesto. Apareció construyendo el chequeo de existencia de imágenes:
+  "la imagen no está en el registry" y "no pude hablar con el registry" son el mismo exit code
+  si uno no los separa, y el segundo caso llega solo —el rate limit anónimo de Docker Hub cortó
+  una corrida y devolvió 7 falsos faltantes en potencia—. Por eso el script distingue tres
+  desenlaces y los dos rojos dicen cosas distintas. La contracara: que el "no pude verificar"
+  **no** cortara sería volver al detector callado. Regla práctica: un detector necesita un
+  estado para *no sé*, y ese estado tiene que ser visible sin ser acusatorio.
 - **Una función que nunca falla puede estar corrompiendo un orden** (#7). `_semver_key`
   aceptaba cualquier string y siempre devolvía una tupla: esa tolerancia *era* el bug, porque
   el `1` de `rc1` terminaba sumado al número de patch. No hay excepción que atrapar ni log que
@@ -179,6 +190,52 @@ procesos; un conteo de instancias en Prometheus, cuando el compose scrapea un ta
 Regla práctica: **el escenario del test tiene que ser el que el sistema produce solo.** Si el bug
 se dispara en cada deploy, el test tiene que ser un deploy — no dos hilos sincronizados a mano.
 
+**Y cuando una comprobación local pasa, hay que preguntarse qué la hizo pasar** (caso 15,
+`alerta-up-metrics-service`, 2026-07-31). Los catorce casos de la tabla son del sistema; este es
+del **método de verificación**, y es la vuelta de tuerca que le faltaba a la regla de arriba. El
+paso de `promtool` se movió al job `e2e` razonando que el `up --build` deja la imagen de
+Prometheus en el daemon; se verificó local, **dio verde, y estaba verde por la causa equivocada**:
+la imagen estaba ahí porque la había traído un `docker run` al principio de la sesión, no porque
+el build la dejara. Con BuildKit, `compose build` deja la **base** en su caché de build y no en el
+image store (`.github/workflows/ci.yml:66-69`). El entorno tenía la evidencia sin tener el
+mecanismo — el equivalente, un nivel más arriba, del caso 3: el `COPY` corría perfecto y el
+archivo estaba por otro motivo.
+
+Dos cosas que conviene no suavizar. La primera: costó **tres intentos** meter ese paso al
+pipeline, y **ninguno de los dos fallos los detectó quien los escribió** — los agarró el CI. La
+segunda: el primer intento era un mal diseño contra el caso **#10** de esta misma página (las
+imágenes de Bitnami retiradas de Docker Hub, "Docker Hub no es una dependencia confiable"),
+escrito por la misma persona horas antes. **Saberlo no alcanzó**, lo cual dice que el valor de
+esta página no está en haberla leído sino en usarla como checklist en el momento de decidir.
+
+Lo que sí funcionó fue **`--pull=never`**: convirtió el supuesto equivocado en un fallo ruidoso
+en lugar de un pull silencioso que anda de a ratos. Es la misma forma del fix de siempre —
+cuando un paso puede resolverse por dos caminos y solo uno es el que se está afirmando,
+prohibir el otro es lo que hace hablar al mecanismo.
+
+**Y un grado más: una verificación que no se ejecuta produce el mismo output que una que pasa**
+(caso 16, `ha-capa-de-datos`, 2026-08-08). El caso 15 es una comprobación que pasa por la causa
+equivocada; este es una que **no ocurrió**, y desde afuera se lee igual.
+
+Probando el failover del cluster de RabbitMQ hacía falta un control: matar el nodo que aloja una
+cola **clásica** y ver que sí pierde el mensaje, porque sin eso "la quorum sobrevivió" no
+distingue entre *el quorum funciona* y *el golpe no fue lo bastante fuerte*. El control se
+escribió sacando el nodo de la columna `leader`, que para colas clásicas **viene vacía**: el
+`grep` no encontró nada, el `delete pod ""` falló, y el "después" salió idéntico al "antes"
+**por no haber matado nada**. Leído rápido —dos tablas iguales, el mensaje ahí— se parecía
+bastante a un control que corrió bien.
+
+Es la forma más barata de fabricarse evidencia falsa, y no necesita ningún mecanismo roto: basta
+que el paso destructivo falle en silencio. Aparece en todo test que primero **busca** el objetivo
+y después lo rompe (un pod, un archivo, un registro, una fila): si la búsqueda devuelve vacío, lo
+que sigue no hace nada y el sistema queda intacto, que es exactamente lo que el test quería ver
+para el caso bueno.
+
+Regla práctica: **verificar el paso intermedio, no solo el resultado.** La pregunta no es "¿el
+mensaje sobrevivió?" sino "¿a quién maté?". Y cuando un paso destructivo toma un objetivo
+calculado, ese objetivo tiene que estar impreso o afirmado antes de usarlo — un `delete` con
+argumento vacío debería cortar, no seguir.
+
 ## Un pariente cercano, que no es lo mismo
 El supuesto **"esto corre en un solo proceso"** apareció cuatro veces en este repo y comparte el
 síntoma —degrada una garantía sin romper nada visible— pero tiene otra raíz: acá el mecanismo de
@@ -201,4 +258,10 @@ Work-streams `except-swallow-audit` (2026-07-14), `limpieza-dx-openapi` (2026-07
 [[2026-07-14-clasificacion-errores-integracion]]
 (la trampa del "envolver un fallo de red en un error genérico") ·
 [[2026-07-24-metricas-de-negocio-gauges]] · work-stream `alerta-up-metrics-service`
-(2026-07-31, caso 14: la frescura de los gauges y las alertas que la miran) · [[roadmap]]
+(2026-07-31, caso 14: la frescura de los gauges y las alertas que la miran; y caso 15, el
+primero sobre el método de verificación y no sobre el sistema) · `.github/workflows/ci.yml`
+(el razonamiento del paso de `promtool`, comentado en el pipeline) ·
+work-stream `verificacion-imagenes-pipeline` (2026-08-08, el modo gemelo: el detector que falla
+por ruidoso) · `.github/workflows/imagenes.yml` · work-stream `ha-capa-de-datos` (2026-08-08,
+caso 16: el control que no se ejecutó) · [[2026-08-08-alcance-del-ha-de-la-capa-de-datos]] ·
+[[roadmap]]

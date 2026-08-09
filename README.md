@@ -310,6 +310,128 @@ Las reglas tienen tests unitarios (`observability/alerts_test.yml`, `promtool te
 corren en CI. No son ceremonia: una alerta con un nombre de métrica mal escrito es
 sintácticamente válida y **nunca dispara**, que desde afuera se ve igual que un sistema sano.
 
+### Imágenes de contenedor referenciadas
+
+```bash
+python scripts/verificar_imagenes.py --listar   # enumera las referencias del repo, sin red
+python scripts/verificar_imagenes.py            # consulta el registry: ¿siguen existiendo?
+```
+
+Las imágenes se declaran en tres lugares (los `Dockerfile`, `docker-compose.yml` y
+`helm/teleflow/values.yaml`) y el script las enumera de los tres, sin lista escrita a mano.
+
+Dos chequeos distintos, a propósito:
+
+- **Lo determinista gatea los merges** (`tests/test_imagenes_contract.py`, sin red): que la capa
+  de datos use la **misma** imagen en el compose y en el chart —están declaradas dos veces y
+  nada más las mantenía sincronizadas—, que el StatefulSet la tome de `values.yaml` y que ningún
+  tag sea mutable.
+- **Lo que depende del registry corre programado** (`.github/workflows/imagenes.yml`, semanal) y
+  **no** bloquea merges. El motivo del trigger: las imágenes de los subcharts de Bitnami
+  desaparecieron de Docker Hub y rompieron el chart sin que nadie tocara un archivo — un
+  disparador por `push` no se habría enterado, porque no hubo push.
+
+El script distingue "la imagen no existe" (exit 1) de "no pude consultar el registry" (exit 2).
+Sin credenciales, el rate limit anónimo de Docker Hub cae en el segundo caso: para evitarlo, el
+workflow hace login si están la variable `DOCKERHUB_USER` y el secreto `DOCKERHUB_TOKEN`.
+
+### TLS
+
+El Ingress del gateway exige TLS cuando está encendido:
+
+```bash
+helm install teleflow helm/teleflow --set apiKey=...   --set gateway.ingress.enabled=true   --set gateway.ingress.host=teleflow.organismo.gub.uy   --set gateway.ingress.tls[0].secretName=teleflow-tls   --set gateway.ingress.tls[0].hosts[0]=teleflow.organismo.gub.uy
+```
+
+El `helm install` **corta** en tres casos que antes pasaban sin ruido: Ingress sin bloque `tls`
+(el gateway quedaría en claro y la API key viaja en un header), una entrada de `tls` sin
+`secretName`, y un `hosts` que no incluye el `host` del Ingress — este último es el peor, porque
+el Ingress se crea perfecto, el controller sirve **su certificado default** y el error aparece
+recién en el navegador de un ciudadano como un fallo de nombre que nadie asocia con el values.
+
+Si el TLS lo termina un balanceador del organismo por delante, se declara:
+`--set gateway.ingress.allowInsecure=true`. Es explícito a propósito: quedar en claro puede ser
+correcto, pero no por olvido.
+
+El Secret del certificado lo crea el organismo, o cert-manager con una anotación en
+`gateway.ingress.annotations`.
+
+**Hacia la capa de datos** hay TLS opt-in en el camino externo: `externalDatabase.sslMode`,
+`externalRedis.tls` y `externalRabbitmq.tls`.
+
+**Límite consciente: no hay TLS entre los servicios internos.** El tráfico dentro del cluster
+(gateway → parser/executor/registry) va en claro. Emitir y rotar certificados por servicio es
+trabajo permanente de operación, y la forma estándar de resolverlo —un service mesh, o
+cert-manager con cambios en cada cliente HTTP— es infraestructura que el organismo instala y
+opera, no que este chart deba traer. Es el mismo criterio del ADR sobre el alcance del HA: la
+plataforma entrega lo que solo ella puede entregar. Si el organismo tiene mesh, esto se resuelve
+sin tocar el chart.
+
+### Runbooks de operación
+
+Qué hacer cuando suena una alerta, cómo mirar la DLQ y cómo restaurar la base:
+**[`docs/runbooks.md`](docs/runbooks.md)**. Todos sus comandos se ejecutaron contra el stack
+real; lo que no se probó está marcado como tal en vez de omitido.
+
+### Alta disponibilidad de la capa de datos
+
+Lo que el chart entrega, y lo que deliberadamente no:
+
+| | Default | HA |
+|---|---|---|
+| RabbitMQ | **3 réplicas en cluster**, colas quorum | **sí, y probado**: matando el nodo que aloja la cola, una cola clásica pierde el mensaje y la quorum lo conserva |
+| Postgres | 1 réplica | **no** — se recomienda apuntar a la base administrada del organismo (abajo) |
+| Redis | 1 réplica | **no**, y es un punto único de fallo asumido |
+
+RabbitMQ es el único donde el HA **no se puede resolver desde afuera**: el tipo de cola lo
+declara la aplicación al declararla, así que un broker administrado en cluster seguiría teniendo
+colas clásicas —que viven en un solo nodo— si este código no pidiera quorum. Y ahí vive la DLQ,
+o sea justo lo que ya falló una vez y no se puede volver a perder.
+
+En Postgres y Redis pasa lo contrario: no hay nada que solo la plataforma pueda aportar, y un
+organismo que ya opera una base administrada tiene mejor HA del que daría cualquier manifiesto de
+este chart. Redis además guarda estado que **degrada** en vez de perderse (contadores de rate
+limit, pub/sub de revocación, estado compartido del gateway; el durable sleep vive en Postgres).
+
+El razonamiento completo y las alternativas descartadas están en el ADR de la wiki sobre el
+alcance del HA de la capa de datos (2026-08-08).
+
+Para desarrollo o un cluster de un solo nodo: `--set rabbitmq.replicas=1`.
+
+### Apoyarse en la capa de datos del organismo
+
+El chart instala Postgres, Redis y RabbitMQ propios (una réplica cada uno), que es lo razonable
+para desarrollo y una instalación chica. **Para producción, lo recomendado en el caso de Postgres
+es apuntar a la base administrada que el organismo ya opera**: tiene HA de verdad y gente de
+guardia, que es más de lo que puede dar cualquier manifiesto de este chart.
+
+```bash
+helm install teleflow helm/teleflow --set apiKey=... \
+  --set postgres.enabled=false \
+  --set externalDatabase.host=pg.organismo.gub.uy \
+  --set externalDatabase.port=6432 \
+  --set externalDatabase.username=teleflow --set externalDatabase.database=teleflow \
+  --set externalDatabase.sslMode=verify-full \
+  --set externalDatabase.existingSecret=teleflow-db --set externalDatabase.urlKey=DATABASE_URL
+```
+
+Cada bloque `external*` acepta `host` (obligatorio: los initContainers esperan a que acepte
+conexiones), `port`, credenciales propias, TLS opt-in (`sslMode` en Postgres, `tls` en Redis y
+RabbitMQ) y `existingSecret` + `urlKey`.
+
+**Con `existingSecret`, la URL completa la pone el organismo en un Secret que administra él y el
+chart la consume por referencia.** Sin él, la URL se arma en el chart — pero tampoco queda en el
+spec del pod: va a un Secret propio de la capa de datos (`<release>-datos`) que los pods
+referencian. La contraseña existe **solo** ahí: cuatro claves, ninguna interpolada en un env
+(antes eran 28 apariciones repartidas por todos los pods). Lo que `existingSecret` agrega es que
+el valor tampoco esté en `values.yaml` al instalar.
+
+Un `existingSecret` sin `urlKey` **corta el `helm install`** nombrando el bloque incompleto, en
+vez de dejar el pod en `CreateContainerConfigError` con el motivo escondido en sus eventos.
+
+El job `chart` de CI renderiza los cuatro modos (propio, externo, externo con Secret, externo a
+medio configurar) porque ninguno de esos fallos se ve leyendo el diff.
+
 ## Doc vs. código: discrepancias conocidas
 
 La doc consolidada (`.md` y PDF en `docs/`) es más vieja que los `.typ` y que el código. **Ante conflicto, el orden de verdad es: código > `.typ` > `.md`/README.**
