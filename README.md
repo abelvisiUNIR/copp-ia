@@ -335,6 +335,12 @@ El script distingue "la imagen no existe" (exit 1) de "no pude consultar el regi
 Sin credenciales, el rate limit anónimo de Docker Hub cae en el segundo caso: para evitarlo, el
 workflow hace login si están la variable `DOCKERHUB_USER` y el secreto `DOCKERHUB_TOKEN`.
 
+### Runbooks de operación
+
+Qué hacer cuando suena una alerta, cómo mirar la DLQ y cómo restaurar la base:
+**[`docs/runbooks.md`](docs/runbooks.md)**. Todos sus comandos se ejecutaron contra el stack
+real; lo que no se probó está marcado como tal en vez de omitido.
+
 ### Alta disponibilidad de la capa de datos
 
 Lo que el chart entrega, y lo que deliberadamente no:
