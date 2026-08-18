@@ -214,6 +214,16 @@ jobs:
             echo "un existingSecret sin urlKey debería cortar el install"; exit 1
           fi
 
+          # El chart corta el install si `existingSecret` se declara y el Secret no existe —
+          # antes ese caso daba "Install complete" con todos los pods en
+          # CreateContainerConfigError. La comprobación usa `lookup`, que **sin cluster devuelve
+          # vacío igual que si el objeto faltara**, así que se sondea kube-system para
+          # distinguir los dos casos. Esto verifica esa parte: un render offline con
+          # `existingSecret` tiene que salir igual, o este mismo job se cae.
+          echo "--- render offline con existingSecret declarado ---"
+          helm template t helm/teleflow --set existingSecret=cualquiera > /dev/null \
+            || { echo "el render offline se rompe con existingSecret: la guarda no distingue 'no hay cluster' de 'no está el Secret'"; exit 1; }
+
           # ---- Autoescalado del executor -----------------------------------------------
           #
           # El HPA es opt-in y el default es que NO exista. Lo que se verifica acá no es que

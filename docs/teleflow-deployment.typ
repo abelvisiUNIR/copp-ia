@@ -44,12 +44,20 @@ curl http://localhost:8000/health
     )[
       #text(size: 10pt, weight: "bold", fill: tf-accent, "Producción — Kubernetes / RKE2")
       #v(8pt)
-      #codeblock(lang: "bash", "# Deploy con Helm
+      #codeblock(lang: "bash", "# 1. El Secret PRIMERO: si no existe, el install corta
+kubectl create namespace teleflow
+kubectl -n teleflow create secret generic \\
+  teleflow-secrets \\
+  --from-literal=TELEFLOW_API_KEY='<valor>'
+
+# 2. Deploy con Helm
 helm upgrade --install teleflow \\
   ./helm/teleflow \\
   --namespace teleflow \\
-  --create-namespace \\
-  -f values-production.yaml
+  -f helm/teleflow/values-production.yaml \\
+  --set image.repository=<registry>/teleflow \\
+  --set image.tag=<tag-inmutable> \\
+  --set existingSecret=teleflow-secrets
 
 # Escalar executor
 kubectl scale deployment \\
@@ -59,7 +67,8 @@ kubectl scale deployment \\
       ")
       #v(8pt)
       #text(size: 8.5pt)[Namespace dedicado. StatefulSets para Postgres, Redis y RabbitMQ.
-      Deployments con 2-3 réplicas para los servicios sin estado.]
+      Deployments con 2-3 réplicas para los servicios sin estado. El checklist completo, con
+      los pasos previos de imágenes y TLS, está en #code("docs/checklist-instalacion.md").]
     ],
   )
 
