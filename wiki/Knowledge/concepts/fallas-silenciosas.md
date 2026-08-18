@@ -9,11 +9,12 @@ tags: [concepto, calidad, resiliencia, observabilidad, patron]
 
 # Fallas silenciosas — el patrón que más veces apareció en este proyecto
 
-> Provenance: `copp-ia@devyos@ae923b6`. Sintetizado de **trece** work-streams distintos
+> Provenance: `copp-ia@devyos@3a345f2`. Sintetizado de **quince** work-streams distintos
 > (`except-swallow-audit`, `limpieza-dx-openapi`, `observabilidad-negocio`,
 > `composer-llm-hardening`, `auditoria-persistida`, `registry-cobertura`,
 > `idempotencia-execute`, `review-ui-tests`, `estado-durable`, `fase-e-helm-kind`,
-> `alerta-up-metrics-service`, `verificacion-imagenes-pipeline`, `ha-capa-de-datos`) que
+> `alerta-up-metrics-service`, `verificacion-imagenes-pipeline`, `ha-capa-de-datos`,
+> `runbooks-y-dr`, `criterio-salida-fase-e`) que
 > encontraron el mismo problema con caras distintas.
 
 ## Qué es
@@ -236,6 +237,60 @@ mensaje sobrevivió?" sino "¿a quién maté?". Y cuando un paso destructivo tom
 calculado, ese objetivo tiene que estar impreso o afirmado antes de usarlo — un `delete` con
 argumento vacío debería cortar, no seguir.
 
+## Y el que no tiene mecanismo ninguno: la documentación
+
+**Caso 17** (`criterio-salida-fase-e`, 2026-08-18), y es de otra clase que los dos anteriores. El
+15 es una comprobación que pasa por la causa equivocada; el 16, una que no se ejecutó. Este es un
+artefacto que **nadie ejecuta nunca**, y por eso no tiene forma de avisar que se rompió.
+
+Un `.md` o un `.typ` no tiene tests, no tiene tipos, no tiene CI. Cuando el código se mueve
+debajo, la doc no falla: **sigue diciendo exactamente lo mismo, con la misma confianza.** No hay
+`except` que trague nada porque no hay mecanismo que tragar — es el grado cero del silencio, y
+por eso conviene tratarla como un artefacto de producción y no como prosa.
+
+La evidencia son dos episodios, y el segundo fue el que convirtió la sospecha en patrón:
+
+- **2026-08-08 (`runbooks-y-dr`).** Escribir el runbook **corriendo cada comando** encontró que
+  citaba una tabla que no existe (`flow_versions`; es `flow_definitions`). Habría fallado en el
+  único momento en que un runbook importa: justo después de un desastre.
+- **2026-08-18 (`criterio-salida-fase-e`).** Escribir el checklist de instalación
+  **ejecutándolo** encontró cuatro cosas de una sola pasada. El comando de producción de
+  `docs/teleflow-deployment.typ` fallaba **en el primer intento** (`-f values-production.yaml`,
+  y el archivo está en `helm/teleflow/`). `values-production.yaml` no se podía instalar tal como
+  venía: exige TLS y traía `tls: []` con un comentario diciendo que el TLS seguía pendiente. Su
+  lista de "PENDIENTE" declaraba pendientes el HA de la capa de datos y la observabilidad, hechos
+  **diez días antes**. Y nada documentaba cómo construir las imágenes que el chart da por
+  existentes.
+
+**Lo que hay que no suavizar:** los cuatro estaban a la vista de cualquiera que abriera esos
+archivos, y **ninguno se vio en semanas de trabajo sobre esos mismos archivos**. Aparecieron
+todos en los primeros diez minutos de correrlos. Leer la doc no la verifica — leerla es
+justamente lo que veníamos haciendo.
+
+Dos vueltas de tuerca que valen aparte. La primera: en el episodio del checklist, el **README**
+—la fuente *menos* autorizada según el orden de verdad del repo (código > `.typ` > `.md`)— tenía
+el comando bien y el `.typ` lo tenía mal. La jerarquía de confianza ordena qué creer ante un
+conflicto, pero **no predice cuál envejeció**; eso depende de cuál se tocó más recientemente. La
+segunda: el chart **ya cortaba** el install si no se declaraba ninguna credencial, y aun así
+declarar `existingSecret` sin crearlo daba `Install complete` con los 18 pods en
+`CreateContainerConfigError`. La guarda cubría el caso de quien **lee** la documentación, no el
+de quien **copia el ejemplo** — y el segundo es el frecuente.
+
+Regla práctica: **la parte determinista de la doc se gatea; el resto se ejecuta cada tanto.** Lo
+verificable sin red ni cluster —que los archivos que nombra existan, que las rutas de un `-f`
+resuelvan desde donde se copia el comando, que las claves de `--set` estén en `values.yaml`—
+vive en `tests/test_doc_contract.py` y corta merges. Lo demás (que la prosa describa bien el
+comportamiento) no lo prueba ningún grep, y se paga ejecutando el checklist en la próxima
+instalación real. Es el mismo reparto que el verificador de imágenes del caso #10: lo estático
+gatea, lo que depende de un tercero va aparte.
+
+Y un detalle del gate que es el mismo patrón mordiéndose la cola: al escribirlo dio **dos falsos
+positivos** —tomó por ruta el usuario/password de RabbitMQ del README, y por clave inválida un
+`--set` sobre un mapa que el chart deja vacío a propósito para el organismo—. Se corrigieron en
+vez de agregarles excepciones puntuales, porque **un detector que grita de más enseña a
+ignorarlo**, que es la forma que ya tenía documentada este repo (el modo gemelo del caso #10: el
+detector que falla por ruidoso).
+
 ## Un pariente cercano, que no es lo mismo
 El supuesto **"esto corre en un solo proceso"** apareció cuatro veces en este repo y comparte el
 síntoma —degrada una garantía sin romper nada visible— pero tiene otra raíz: acá el mecanismo de
@@ -264,4 +319,7 @@ primero sobre el método de verificación y no sobre el sistema) · `.github/wor
 work-stream `verificacion-imagenes-pipeline` (2026-08-08, el modo gemelo: el detector que falla
 por ruidoso) · `.github/workflows/imagenes.yml` · work-stream `ha-capa-de-datos` (2026-08-08,
 caso 16: el control que no se ejecutó) · [[2026-08-08-alcance-del-ha-de-la-capa-de-datos]] ·
+work-streams [[runbooks-y-dr]] (2026-08-08) y [[criterio-salida-fase-e]] (2026-08-18, caso 17:
+la documentación, el artefacto que nadie ejecuta) · `docs/checklist-instalacion.md` ·
+`tests/test_doc_contract.py` (la mitad determinista, gateando merges) ·
 [[roadmap]]
