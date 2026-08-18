@@ -9,7 +9,13 @@ metadata:
     app: {{ $fullName }}
     {{- include "teleflow.labels" $ | nindent 4 }}
 spec:
+  {{- if and $.Values.autoscaling.enabled (eq $name "executor-service") }}
+  # Sin `replicas` a propósito: lo gobierna el HorizontalPodAutoscaler. Declararlo igual haría
+  # que cada `helm upgrade` devolviera la escala al número de `values.yaml` y el HPA la volviera
+  # a subir — un pod que aparece y desaparece en cada deploy, sin que nada falle ni se loguee.
+  {{- else }}
   replicas: {{ $svc.replicas }}
+  {{- end }}
   selector:
     matchLabels:
       app: {{ $fullName }}

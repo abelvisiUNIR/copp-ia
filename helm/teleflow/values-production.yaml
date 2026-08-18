@@ -46,6 +46,19 @@ gateway:
     annotations: {}
     tls: []                                # ← el TLS sigue pendiente (Fase E)
 
+# Autoescalado del executor: **apagado también en producción**, y a propósito.
+#
+# No es una omisión pendiente como las de abajo: está medido y decidido. La CPU no sirve como
+# señal (el techo del executor es `WORKER_CONCURRENCY`, un semáforo, y el servicio es
+# I/O-bound), y aunque la señal de backlog existe y funciona, nadie demostró todavía que sumar
+# réplicas drene una cola ya formada — la instancia la ejecuta la réplica que recibió el
+# `POST /execute`. Prenderlo requiere, además, que el organismo publique la métrica externa.
+#
+# Mientras esté apagado, la capacidad se ajusta con las dos perillas que sí están medidas:
+# `WORKER_CONCURRENCY` (cuánto hace cada réplica a la vez) y `services.executor-service.replicas`.
+autoscaling:
+  enabled: false
+
 # La capa de datos (Postgres, Redis, RabbitMQ) ya no se configura acá: son StatefulSets del
 # propio chart, con las mismas imágenes oficiales que usa el docker-compose.yml. Para apuntar a
 # una base que el organismo ya administra, poner `postgres.enabled: false` y `externalDatabase`.

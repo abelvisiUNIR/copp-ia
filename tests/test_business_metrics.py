@@ -9,11 +9,13 @@ import pytest
 
 from teleflow.common.config import Settings
 from teleflow.executor_service.business_metrics import (
+    EXECUTOR_BACKLOG,
     HUMAN_TASK_BACKLOG,
     HUMAN_TASK_OLDEST_SECONDS,
     INSTANCES_CURRENT,
     LAST_SUCCESS_TIMESTAMP,
     REFRESH_FAILURES,
+    WORKER_STATUSES,
     BusinessMetricsCollector,
     InstanceGroup,
 )
@@ -26,6 +28,7 @@ def collector() -> BusinessMetricsCollector:
     INSTANCES_CURRENT.clear()
     HUMAN_TASK_BACKLOG.clear()
     HUMAN_TASK_OLDEST_SECONDS.clear()
+    EXECUTOR_BACKLOG.set(0)
     return BusinessMetricsCollector(None, Settings())  # type: ignore[arg-type]
 
 
@@ -39,6 +42,10 @@ def esperando_hace(flow: str, step: str) -> float:
 
 def vivas(flow: str, status: str) -> float:
     return float(INSTANCES_CURRENT.labels(flow, status)._value.get())
+
+
+def compitiendo_por_worker() -> float:
+    return float(EXECUTOR_BACKLOG._value.get())
 
 
 def waiting(step: str, count: int, minutos: int = 0) -> InstanceGroup:
@@ -110,6 +117,48 @@ def test_una_instancia_recien_dormida_reporta_espera_no_negativa(collector):
     collector.publish([futuro], NOW)
 
     assert esperando_hace("venta", "aprobacion") == 0
+
+
+# --- Backlog del executor (señal de capacidad) ------------------------------------------
+#
+# `teleflow_executor_backlog` es la métrica que puede consumir un autoscaler. Lo que la hace
+# utilizable es lo que **no** cuenta: una instancia dormida en durable sleep no ocupa worker,
+# así que sumarla haría escalar por humanos que no contestaron. Ver el bloque `autoscaling`
+# de `helm/teleflow/values.yaml`.
+
+
+def test_el_backlog_del_executor_cuenta_lo_que_compite_por_un_worker(collector):
+    collector.publish(
+        [InstanceGroup("venta", "TRIGGERED", None, 7, NOW),
+         InstanceGroup("venta", "IN_PROGRESS", "alta_ott", 10, NOW),
+         InstanceGroup("ceibal", "RETRYING", None, 2, NOW)],
+        NOW,
+    )
+
+    assert compitiendo_por_worker() == 19
+
+
+def test_el_backlog_del_executor_no_cuenta_durable_sleep(collector):
+    """Una instancia esperando a un humano no ocupa worker: escalar por ella es desperdicio."""
+    collector.publish([waiting("aprobacion", 220), waiting("instalacion", 80)], NOW)
+
+    assert compitiendo_por_worker() == 0
+    # Y sigue estando visible donde corresponde: el backlog humano no se pierde, se separa.
+    assert backlog("venta", "aprobacion") == 220
+
+
+def test_el_backlog_del_executor_vuelve_a_cero_cuando_se_drena(collector):
+    """Un gauge conserva el último valor: un backlog fantasma dejaría réplicas de más."""
+    collector.publish([InstanceGroup("venta", "TRIGGERED", None, 300, NOW)], NOW)
+
+    collector.publish([], NOW)
+
+    assert compitiendo_por_worker() == 0
+
+
+def test_los_estados_que_compiten_por_worker_excluyen_solo_el_durable_sleep(collector):
+    """Un estado vivo nuevo tiene que entrar al backlog salvo decisión explícita."""
+    assert set(WORKER_STATUSES) == {"TRIGGERED", "IN_PROGRESS", "RETRYING"}
 
 
 # --- Un solo publicador -----------------------------------------------------------------

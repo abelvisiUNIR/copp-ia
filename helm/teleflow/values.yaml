@@ -103,6 +103,42 @@ services:
     replicas: 1
     module: teleflow.metrics_service.main:app
 
+# Autoescalado del executor. **Apagado a propósito**, y esa es la decisión, no un olvido.
+#
+# Por qué no escala por CPU: está medido y la CPU no sirve como señal acá. El techo del
+# executor no es CPU sino `WORKER_CONCURRENCY` —un semáforo por réplica— y el servicio es
+# I/O-bound: lo que sobra se queda esperando el semáforo, no compitiendo por CPU. Con el mismo
+# throughput saturado, cuadruplicar la cola (de 12 s a 48 s de espera) movió la CPU de 296 m a
+# 351 m, un 19 %; y a media capacidad, sin nadie esperando, ya tocaba el 94 % del request de
+# 100 m. Un `averageUtilization` escalaría con carga inofensiva y se quedaría quieto justo
+# cuando la cola se dispara.
+#
+# Por qué viene apagado aun con la señal correcta: se puede demostrar que el backlog crece,
+# pero **no** que sumar réplicas lo drene. La réplica que recibe el `POST /execute` es la que
+# ejecuta esa instancia, así que un pod nuevo atiende disparos nuevos y no toca lo que ya está
+# encolado en otro pod. Prenderlo por default prometería una elasticidad que nadie probó
+# rompiéndola — el mismo criterio con el que se decidió el alcance del HA de la capa de datos.
+#
+# Prenderlo requiere que el organismo exponga `metricName` como métrica externa (Prometheus
+# Adapter o equivalente). Si no está, el HPA queda sin métrica y no escala: no rompe nada, pero
+# tampoco hace nada. Y ojo con el ritmo: el gauge se refresca cada `BUSINESS_METRICS_INTERVAL`
+# (30 s por default), así que el HPA nunca ve el backlog con menos de esa antigüedad. Por eso
+# las ventanas de estabilización de abajo no bajan de ese valor.
+autoscaling:
+  enabled: false
+  minReplicas: 3
+  maxReplicas: 10
+  # Instancias compitiendo por un worker que se toleran **por pod** antes de sumar réplicas.
+  # Con `WORKER_CONCURRENCY: 10`, un valor de 20 significa "hasta dos tandas de espera".
+  backlogPorPod: 20
+  # Nombre de la métrica externa, tal como la tiene que publicar el adapter del organismo.
+  # Es la que emite `metrics-service`: excluye durable sleep a propósito (una instancia
+  # dormida esperando a un humano no ocupa worker, y escalar por ella es puro desperdicio).
+  metricName: teleflow_executor_backlog
+  # Ventanas de estabilización, en segundos. Bajar es reaccionar a un número viejo.
+  ventanaSubidaSegundos: 60
+  ventanaBajadaSegundos: 300
+
 # Cómo se entra al gateway desde fuera del cluster. La doc (§10.2) dice "detrás de
 # Ingress/LoadBalancer" y el chart no tenía ninguno de los dos: era `type: LoadBalancer` fijo,
 # que en kind queda `<pending>` para siempre. En local: `kubectl port-forward`.

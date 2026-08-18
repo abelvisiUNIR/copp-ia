@@ -141,7 +141,21 @@ Combinado y en este orden de madurez:
   patroni casero porque no se puede demostrar que funcione, y un organismo con base administrada
   ya tiene mejor HA; para eso el **camino externo pasó a ser de primera clase** (puerto,
   credenciales propias, TLS, `existingSecret` que saca la contraseña del spec del pod, y un
-  install que corta nombrando lo que falta). Los probes ya existían. **Falta: HPA del executor.**
+  install que corta nombrando lo que falta). Los probes ya existían.
+- [x] **Autoescalado del executor (hecho 2026-08-18 → `hpa-executor`)**, decidido con medición y
+  no con la señal obvia: ver [[2026-08-18-senal-de-escalado-del-executor]]. **La CPU quedó
+  descartada** — el techo del executor es `WORKER_CONCURRENCY` (un semáforo por réplica) y el
+  servicio es I/O-bound, así que con el mismo throughput saturado cuadruplicar la cola movió la
+  CPU un **19 %** (296 m → 351 m), mientras que a media capacidad y sin nadie esperando ya
+  tocaba el **94 % del request de 100 m**: sensible donde no importa, sorda donde importa. La
+  señal es el backlog que compite por un worker (`teleflow_executor_backlog`, gauge nuevo que
+  **excluye durable sleep**: con 225 instancias dormidas y el executor ocioso marca 0, verificado
+  en vivo). **El HPA entra al chart apagado** (`autoscaling.enabled: false`) porque se puede
+  demostrar que la cola crece pero **no** que sumar réplicas la drene — la instancia la ejecuta
+  la réplica que recibió el `POST /execute`. Con el HPA prendido el Deployment deja de declarar
+  `replicas` (si no, cada `upgrade` se lo pisa en silencio) y el install corta ante cuatro
+  configuraciones que no podrían escalar. **Límite escrito:** el gauge se refresca cada 30 s, así
+  que las ventanas de estabilización no pueden bajar de ahí.
 - [ ] Runbooks, backup/restore Postgres, disaster recovery, alertas Prometheus.
   Backup/restore ya está ([[estado-durable]]). **Observabilidad: el chart trae los puntos de
   integración** (anotaciones de scrape, `ServiceMonitor` y ConfigMap de dashboards, opt-in) y se
