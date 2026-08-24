@@ -213,3 +213,70 @@ jobs:
           else
             echo "un existingSecret sin urlKey debería cortar el install"; exit 1
           fi
+
+          # El chart corta el install si `existingSecret` se declara y el Secret no existe —
+          # antes ese caso daba "Install complete" con todos los pods en
+          # CreateContainerConfigError. La comprobación usa `lookup`, que **sin cluster devuelve
+          # vacío igual que si el objeto faltara**, así que se sondea kube-system para
+          # distinguir los dos casos. Esto verifica esa parte: un render offline con
+          # `existingSecret` tiene que salir igual, o este mismo job se cae.
+          echo "--- render offline con existingSecret declarado ---"
+          helm template t helm/teleflow --set existingSecret=cualquiera > /dev/null \
+            || { echo "el render offline se rompe con existingSecret: la guarda no distingue 'no hay cluster' de 'no está el Secret'"; exit 1; }
+
+          # ---- Autoescalado del executor -----------------------------------------------
+          #
+          # El HPA es opt-in y el default es que NO exista. Lo que se verifica acá no es que
+          # el YAML salga bien formado, sino las dos formas en que este objeto se rompe sin
+          # que nada falle: que aparezca cuando nadie lo pidió, y que conviva con un
+          # `replicas` fijo que se lo pise en cada upgrade.
+          echo "--- por default no hay HPA ---"
+          sinHpa=$(render)
+          if echo "$sinHpa" | grep -q HorizontalPodAutoscaler; then
+            echo "el HPA se está creando sin que nadie lo pida"; exit 1
+          fi
+
+          conHpa=$(render --set autoscaling.enabled=true)
+
+          # Aísla un documento del render por kind + nombre. Hace falta mirar documento por
+          # documento y no el render entero: `replicas:` aparece en varios, y un grep global
+          # da por bueno el de otro objeto.
+          doc() { awk -v k="$1" -v n="$2" 'BEGIN{RS="\n---\n"} $0 ~ "kind: "k && $0 ~ "\n  name: "n"\n"'; }
+
+          echo "--- con el HPA prendido, el Deployment del executor no fija replicas ---"
+          # Si `replicas` sigue declarado, cada `helm upgrade` devuelve la escala al valor de
+          # values.yaml y el HPA la vuelve a subir: pods que aparecen y desaparecen en cada
+          # deploy, sin error ni log que lo delate.
+          if echo "$conHpa" | doc Deployment t-executor-service | grep -q "^  replicas:"; then
+            echo "el executor fija replicas y el HPA se las va a pelear"; exit 1
+          fi
+
+          echo "--- pero sin HPA sí las fija, o el deploy queda en manos de nadie ---"
+          echo "$sinHpa" | doc Deployment t-executor-service | grep -q "^  replicas: 3" \
+            || { echo "sin autoscaling el executor tiene que fijar sus 3 réplicas"; exit 1; }
+
+          echo "--- y metrics-service sigue en una sola réplica ---"
+          # Publica gauges de valor absoluto: dos publicadores hacen leer el doble todo número
+          # de negocio, sin que nada falle ni se loguee.
+          echo "$conHpa" | doc Deployment t-metrics-service | grep -q "^  replicas: 1" \
+            || { echo "metrics-service dejó de estar en 1 réplica"; exit 1; }
+
+          echo "--- el HPA apunta al backlog que publica el código, no a CPU ---"
+          # El nombre tiene que ser el mismo que emite `business_metrics.py`. Si alguien
+          # renombra la métrica de un lado, esto lo caza acá y no en producción.
+          echo "$conHpa" | grep -q 'name: teleflow_executor_backlog' \
+            || { echo "el HPA no usa la métrica de backlog"; exit 1; }
+          grep -q '"teleflow_executor_backlog"' teleflow/executor_service/business_metrics.py \
+            || { echo "el chart pide una métrica que el código no publica"; exit 1; }
+          if echo "$conHpa" | grep -A3 'type: External' | grep -qi 'cpu'; then
+            echo "volvió a aparecer CPU como señal de escalado"; exit 1
+          fi
+
+          echo "--- configuraciones que no pueden escalar: tienen que cortar el install ---"
+          for caso in "autoscaling.maxReplicas=1" "autoscaling.metricName=" \
+                      "autoscaling.backlogPorPod=0" "autoscaling.ventanaSubidaSegundos=10"; do
+            if render --set autoscaling.enabled=true --set "$caso" > /dev/null 2>&1; then
+              echo "'$caso' debería cortar el install y no lo hizo"; exit 1
+            fi
+          done
+          echo "ok: las cuatro cortan"

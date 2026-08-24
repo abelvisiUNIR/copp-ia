@@ -39,11 +39,35 @@ ACTIVE_STATUSES = ("TRIGGERED", "IN_PROGRESS", "RETRYING", "WAITING_SIGNAL")
 # Estado en el que la instancia duerme esperando la señal de un human_task (engine.py).
 WAITING_SIGNAL = "WAITING_SIGNAL"
 
+# Estados en los que la instancia **compite por un worker** del executor. Es
+# `ACTIVE_STATUSES` menos `WAITING_SIGNAL`, y la diferencia no es cosmética: una instancia
+# dormida en durable sleep no ocupa nada —`_run` hace `return` y suelta semáforo y lease— así
+# que sumarla al trabajo pendiente hace leer como saturación lo que es un humano que todavía no
+# contestó. Medido: con 220 instancias en WAITING_SIGNAL, el executor estaba ocioso.
+WORKER_STATUSES = tuple(s for s in ACTIVE_STATUSES if s != WAITING_SIGNAL)
+
 
 INSTANCES_CURRENT = Gauge(
     "teleflow_instances_current",
     "Instancias de proceso vivas ahora, por estado",
     ["flow_name", "status"],
+)
+# Trabajo que compite por un worker, en un solo número y sin labels: es la señal de capacidad
+# del executor, y existe aparte de `teleflow_instances_current` por dos motivos medidos.
+#
+# (a) **Excluye WAITING_SIGNAL.** Sumar durable sleep haría escalar por humanos que no
+#     contestan, y las réplicas nuevas no podrían hacer nada al respecto.
+# (b) **No tiene labels.** Un autoscaler necesita un escalar; obligarlo a sumar series por
+#     `flow_name` deja la decisión de capacidad escrita en la query de quien configure el
+#     adapter, donde nadie la revisa y donde ya vimos que se cuela WAITING_SIGNAL.
+#
+# Lo que este número NO dice, y por eso el HPA del chart viene apagado: que sumar réplicas lo
+# baje. El reparto de trabajo va por el balanceo HTTP del Service —la réplica que recibe el
+# `POST /execute` es la que ejecuta la instancia— así que un pod nuevo atiende disparos nuevos
+# pero no drena la cola que ya está encolada en otro.
+EXECUTOR_BACKLOG = Gauge(
+    "teleflow_executor_backlog",
+    "Instancias que compiten por un worker del executor (excluye durable sleep)",
 )
 HUMAN_TASK_BACKLOG = Gauge(
     "teleflow_human_task_backlog",
@@ -195,6 +219,13 @@ class BusinessMetricsCollector:
                 previo = mas_viejo.get(step_key)
                 if previo is None or group.oldest_updated_at < previo:
                     mas_viejo[step_key] = group.oldest_updated_at
+
+        # Se calcula sumando el mismo agregado, no con una query aparte: dos consultas podrían
+        # leer momentos distintos y dejar el backlog contradiciendo a `instances_current`.
+        EXECUTOR_BACKLOG.set(
+            sum(total for (_, estado), total in por_estado.items()
+                if estado in WORKER_STATUSES)
+        )
 
         for labels in self._instance_labels - set(por_estado):
             INSTANCES_CURRENT.labels(*labels).set(0)

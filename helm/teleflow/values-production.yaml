@@ -44,19 +44,55 @@ gateway:
     className: nginx
     host: teleflow.organismo.gub.uy       # ← el dominio del organismo
     annotations: {}
-    tls: []                                # ← el TLS sigue pendiente (Fase E)
+    # TLS obligatorio con el Ingress prendido: sin esto el install **corta**, porque publicar el
+    # gateway en claro manda la API key en un header. Este archivo lo deja vacío a propósito —
+    # el certificado es del organismo y no puede venir de un values versionado. Hay que definir
+    # uno de los dos antes de instalar:
+    #
+    #   tls:
+    #     - secretName: teleflow-tls
+    #       hosts: [teleflow.organismo.gub.uy]   # tiene que coincidir con `host` de arriba
+    #
+    #   allowInsecure: true                      # si el TLS lo termina un balanceador más arriba
+    tls: []
+
+# Autoescalado del executor: **apagado también en producción**, y a propósito.
+#
+# No es una omisión pendiente como las de abajo: está medido y decidido. La CPU no sirve como
+# señal (el techo del executor es `WORKER_CONCURRENCY`, un semáforo, y el servicio es
+# I/O-bound), y aunque la señal de backlog existe y funciona, nadie demostró todavía que sumar
+# réplicas drene una cola ya formada — la instancia la ejecuta la réplica que recibió el
+# `POST /execute`. Prenderlo requiere, además, que el organismo publique la métrica externa.
+#
+# Mientras esté apagado, la capacidad se ajusta con las dos perillas que sí están medidas:
+# `WORKER_CONCURRENCY` (cuánto hace cada réplica a la vez) y `services.executor-service.replicas`.
+autoscaling:
+  enabled: false
 
 # La capa de datos (Postgres, Redis, RabbitMQ) ya no se configura acá: son StatefulSets del
 # propio chart, con las mismas imágenes oficiales que usa el docker-compose.yml. Para apuntar a
 # una base que el organismo ya administra, poner `postgres.enabled: false` y `externalDatabase`.
 
-# PENDIENTE — decisiones de Fase E que este archivo NO resuelve todavía:
+# Lo que este archivo NO resuelve, y por qué. La lista anterior daba por pendientes tres cosas
+# que ya están hechas — quedó vieja y engañaba a quien la leía para decidir si podía instalar.
 #
-#  * HA de la capa de datos. La doc §10.2 recomienda patroni para Postgres, Sentinel para Redis
-#    y 3 nodos con quorum queues para RabbitMQ. Nada de eso está configurado acá: los tres
-#    StatefulSets son de 1 réplica.
+#  * **HA de la capa de datos: decidido, no pendiente.** La plataforma entrega HA solo donde
+#    nadie más puede hacerlo. RabbitMQ va en cluster de 3 con quorum queues (el tipo de cola lo
+#    declara la aplicación: un broker administrado no lo arregla desde afuera), con failover
+#    medido. Postgres y Redis quedan en **1 réplica a propósito** —sin patroni casero— y la
+#    respuesta para producción es el camino externo: `postgres.enabled: false` + el bloque
+#    `externalDatabase`, que ya soporta puerto, TLS, credenciales y `existingSecret`.
 #
-#  * Observabilidad. Prometheus y Grafana no están en el chart; hoy solo existen en el
-#    docker-compose.
+#  * **Observabilidad: los puntos de integración están, el stack no.** El chart trae anotaciones
+#    de scrape, `ServiceMonitor`, ConfigMap de dashboards y `PrometheusRule` con las alertas,
+#    todo opt-in bajo `observabilidad`. Prometheus y Grafana no se instalan desde acá a
+#    propósito: en producción son del organismo.
 #
-#  * Los passwords de Postgres y RabbitMQ siguen viajando por `values` en texto plano.
+#  * **Passwords de la capa de datos propia: siguen viniendo de `values` en texto plano.** Ya no
+#    llegan al spec de los pods —viven en su propio Secret y los pods lo referencian— pero el
+#    valor inicial sale de este archivo. Para que no exista en ningún archivo hay que usar la
+#    capa de datos del organismo con `external<Comp>.existingSecret`.
+#
+#  * **TLS del borde: es del organismo.** Ver el bloque `gateway.ingress` de arriba.
+#
+# El checklist completo de instalación está en `docs/checklist-instalacion.md`.

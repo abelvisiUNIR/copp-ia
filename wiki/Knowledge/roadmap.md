@@ -125,10 +125,17 @@ Combinado y en este orden de madurez:
   y son un Job normal con initContainers que esperan a Postgres y al schema en `head`. Efecto
   bueno: en un upgrade los pods nuevos no arrancan hasta que el schema está migrado, así que el
   orden "schema primero, código después" lo garantiza el pod y no la ceremonia del deploy.
-- [ ] Secrets fuera de `.env` (k8s Secrets / Vault); rotación de `TELEFLOW_API_KEY`.
-  **Medio hecho:** el chart crea el Secret o consume uno del organismo (`existingSecret`), y sin
-  ninguno de los dos el install **falla diciendo cuál falta**. Sigue pendiente que los passwords
-  de Postgres y RabbitMQ salgan de `values` en texto plano.
+- [x] Secrets fuera de `.env` (k8s Secrets / Vault); rotación de `TELEFLOW_API_KEY`.
+  El chart crea el Secret o consume uno del organismo (`existingSecret`), y sin ninguno de los
+  dos el install **falla diciendo cuál falta**. Desde 2026-08-18 también corta cuando el
+  `existingSecret` **se declara y no existe** — antes ese caso decía `Install complete` y dejaba
+  los 18 pods en `CreateContainerConfigError` con el motivo enterrado en sus eventos (lo
+  encontró el checklist de salida, instalando). La rotación se administra por API con scope
+  `keys:admin`; la key del Secret es el bootstrap.
+  **Límite consciente que queda:** los passwords de la capa de datos **propia** salen de `values`
+  en texto plano — ya no llegan al spec de los pods, pero el valor inicial está ahí. La salida es
+  la capa de datos del organismo con `external<Comp>.existingSecret`, que es el camino
+  recomendado en producción.
 - [x] **HA de la capa de datos (hecho 2026-08-08 → `ha-capa-de-datos`)**, con alcance
   deliberadamente menor que la lectura literal de §10.2 y decidido en
   [[2026-08-08-alcance-del-ha-de-la-capa-de-datos]]: la plataforma entrega HA **donde solo ella
@@ -141,8 +148,22 @@ Combinado y en este orden de madurez:
   patroni casero porque no se puede demostrar que funcione, y un organismo con base administrada
   ya tiene mejor HA; para eso el **camino externo pasó a ser de primera clase** (puerto,
   credenciales propias, TLS, `existingSecret` que saca la contraseña del spec del pod, y un
-  install que corta nombrando lo que falta). Los probes ya existían. **Falta: HPA del executor.**
-- [ ] Runbooks, backup/restore Postgres, disaster recovery, alertas Prometheus.
+  install que corta nombrando lo que falta). Los probes ya existían.
+- [x] **Autoescalado del executor (hecho 2026-08-18 → `hpa-executor`)**, decidido con medición y
+  no con la señal obvia: ver [[2026-08-18-senal-de-escalado-del-executor]]. **La CPU quedó
+  descartada** — el techo del executor es `WORKER_CONCURRENCY` (un semáforo por réplica) y el
+  servicio es I/O-bound, así que con el mismo throughput saturado cuadruplicar la cola movió la
+  CPU un **19 %** (296 m → 351 m), mientras que a media capacidad y sin nadie esperando ya
+  tocaba el **94 % del request de 100 m**: sensible donde no importa, sorda donde importa. La
+  señal es el backlog que compite por un worker (`teleflow_executor_backlog`, gauge nuevo que
+  **excluye durable sleep**: con 225 instancias dormidas y el executor ocioso marca 0, verificado
+  en vivo). **El HPA entra al chart apagado** (`autoscaling.enabled: false`) porque se puede
+  demostrar que la cola crece pero **no** que sumar réplicas la drene — la instancia la ejecuta
+  la réplica que recibió el `POST /execute`. Con el HPA prendido el Deployment deja de declarar
+  `replicas` (si no, cada `upgrade` se lo pisa en silencio) y el install corta ante cuatro
+  configuraciones que no podrían escalar. **Límite escrito:** el gauge se refresca cada 30 s, así
+  que las ventanas de estabilización no pueden bajar de ahí.
+- [x] Runbooks, backup/restore Postgres, disaster recovery, alertas Prometheus.
   Backup/restore ya está ([[estado-durable]]). **Observabilidad: el chart trae los puntos de
   integración** (anotaciones de scrape, `ServiceMonitor` y ConfigMap de dashboards, opt-in) y se
   verificó con un Prometheus real descubriendo los 11 pods. **Alertas: hechas** (2026-07-31 →
@@ -154,11 +175,19 @@ Combinado y en este orden de madurez:
   ninguna de las 16 métricas del repo era un timestamp de último éxito. Tres reglas en
   `helm/teleflow/alerts/alerts.yml`, **una sola fuente** que consumen la imagen de Prometheus del
   compose y un `PrometheusRule` opt-in del chart, igual que los dashboards y por el mismo motivo.
-  Ver [[fallas-silenciosas]] #14. **Siguen pendientes runbooks y disaster recovery.**
-- [ ] Hardening: TLS, no exponer servicios internos, revisión de superficie de ataque.
+  Ver [[fallas-silenciosas]] #14. **Runbooks y DR: hechos** el 2026-08-08 → [[runbooks-y-dr]],
+  `docs/runbooks.md`, con cada comando ejecutado contra el stack real — y escribirlos funcionó
+  como test de la documentación: encontró una tabla que no existe (`flow_versions`, es
+  `flow_definitions`) que habría fallado justo después de un desastre.
+- [x] Hardening: TLS, no exponer servicios internos, revisión de superficie de ataque.
   El gateway dejó de ser `LoadBalancer` fijo (Service configurable + Ingress opt-in) y la
   `review-ui` **dejó de publicarse**: era la UI desde la que se aprueba y despliega código, y
-  estaba potencialmente expuesta sin que nadie lo hubiera decidido. TLS sigue pendiente.
+  estaba potencialmente expuesta sin que nadie lo hubiera decidido. **TLS del borde: hecho** el
+  2026-08-08 — con el Ingress prendido el TLS es **obligatorio** y el install corta si falta,
+  salvo que el organismo declare que lo termina más arriba (`allowInsecure: true`). Publicar el
+  gateway en claro manda la API key en un header.
+  **Límite consciente:** el TLS **interno** entre servicios no se hace y está escrito como
+  decisión, no omitido.
 - [x] **Que el pipeline verifique que las imágenes referenciadas existen** (hecho 2026-08-08 →
   `verificacion-imagenes-pipeline`). Salió partido en dos, y esa fue la decisión del work-stream:
   lo **determinista gatea los merges** (`tests/test_imagenes_contract.py`, sin red: que la capa
@@ -171,7 +200,18 @@ Combinado y en este orden de madurez:
   existe" (exit 1) de "no pude consultar" (exit 2), porque un detector también puede fallar
   **por ruidoso**: ver [[fallas-silenciosas]], modo gemelo del caso #14. **Límite consciente:**
   las imágenes que publica cada organismo no se verifican (son de su registry, no del repo).
-- **Criterio de salida:** deploy reproducible por organismo (ADR-005) con checklist verde.
+- [x] **Criterio de salida: deploy reproducible por organismo (ADR-005) con checklist verde**
+  (hecho 2026-08-18 → `criterio-salida-fase-e`). `docs/checklist-instalacion.md`, **ejecutado de
+  punta a punta antes de escribirse** contra un kind limpio: 18 pods arriba, migración aplicada,
+  **24 e2e verdes contra el cluster** y `helm upgrade` idempotente que los deja verdes de nuevo.
+  Escribirlo ejecutando encontró cuatro cosas que leyendo no se veían — la peor: declarar
+  `existingSecret` sin crearlo daba `Install complete` con **todos** los pods en
+  `CreateContainerConfigError`, que es justo el modo de falla que el README declaraba evitado
+  (ahora el install corta nombrando el Secret y el comando para crearlo).
+  **Lo que el checklist NO declara verde, por escrito:** registry privado, base administrada
+  real, Ingress con TLS real, Prometheus del organismo y RKE2 — todo depende de infraestructura
+  del organismo y se cierra en la primera instalación real.
+- **Estado de la fase: CERRADA** (2026-08-18), con sus límites conscientes escritos en cada ítem.
 
 ### Fase F — Futuro / opcional (Fase 4 del arquitecto)
 - Plugin VS Code (Tree-sitter + syntax highlighting).

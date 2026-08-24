@@ -33,6 +33,15 @@ dev = [
     # Solo para tests: permite ejercitar SQL real (rowcount de un UPDATE con WHERE) sin
     # depender de que Postgres sea alcanzable desde el host, que a propósito no lo es.
     "aiosqlite>=0.20",
+    # Para leer `values.yaml` desde los tests de contrato. Hoy llega igual como extra de
+    # `uvicorn[standard]`, así que declararlo no cambia nada instalado — pero un extra
+    # transitivo puede desaparecer en una versión y dejar la suite rota por un motivo que no
+    # tiene que ver con el cambio que la rompió.
+    "pyyaml>=6.0",
+    # `mypy .` es el gate y corre sobre los tests: sin los stubs, importar yaml es un error.
+    # Se instalan los stubs en vez de silenciar el módulo con un override, que es lo que se
+    # hizo con networkx — ahí no había stubs; acá sí, y tiparlo cuesta una línea.
+    "types-PyYAML>=6.0",
 ]
 
 [project.scripts]
