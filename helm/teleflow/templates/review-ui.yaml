@@ -1,64 +1,39 @@
 {{- if .Values.reviewUi.enabled }}
-{{- $fullName := printf "%s-review-ui" .Release.Name }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ $fullName }}
+  name: review-ui
   labels:
-    app: {{ $fullName }}
+    app: review-ui
     {{- include "teleflow.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.reviewUi.replicas }}
   selector:
     matchLabels:
-      app: {{ $fullName }}
+      app: review-ui
   template:
     metadata:
       labels:
-        app: {{ $fullName }}
+        app: review-ui
         {{- include "teleflow.labels" . | nindent 8 }}
     spec:
       containers:
         - name: review-ui
           image: "{{ .Values.uiImage.repository }}:{{ .Values.uiImage.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          env:
-            # El nginx de la imagen proxea /api/ hacia acá. Sin esto usaría su default
-            # (`http://api-gateway:8000`), que es el nombre del compose y no el del release.
-            #
-            # Va el FQDN completo, no el nombre corto: el `resolver` de nginx consulta al DNS
-            # directamente y **no usa la lista `search` de /etc/resolv.conf**, así que
-            # `teleflow-api-gateway` no resuelve y el proxy devuelve 502 mientras todo lo demás
-            # parece sano. Los servicios Python no tienen el problema porque usan el resolver
-            # del sistema, que sí aplica `search`.
-            - name: GATEWAY_ORIGIN
-              value: {{ printf "http://%s-api-gateway.%s.svc.%s:8000" .Release.Name .Release.Namespace .Values.clusterDomain | quote }}
           ports:
             - containerPort: 80
-          readinessProbe:
-            httpGet:
-              path: /
-              port: 80
-            initialDelaySeconds: 3
-            periodSeconds: 10
-          resources:
-            requests:
-              cpu: 10m
-              memory: 32Mi
-            limits:
-              memory: 128Mi
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ $fullName }}
+  name: review-ui
   labels:
-    app: {{ $fullName }}
+    app: review-ui
     {{- include "teleflow.labels" . | nindent 4 }}
 spec:
-  type: ClusterIP
+  type: LoadBalancer
   selector:
-    app: {{ $fullName }}
+    app: review-ui
   ports:
     - port: {{ .Values.reviewUi.port }}
       targetPort: 80

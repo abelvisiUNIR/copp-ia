@@ -61,44 +61,10 @@ button.reject:hover { background: #f85149; }
 
 .status {
   font-size: 11px; padding: 2px 8px; border-radius: 10px; vertical-align: middle;
-  display: inline-block; white-space: nowrap;
 }
 .status.pending { background: #3b2300; color: #d29922; }
 .status.approved { background: #122117; color: #56d364; }
 .status.rejected { background: #3d1418; color: #ff7b72; }
-
-/* Validación contra el parser: "sin verificar" se ve distinto de "compila" a propósito —
-   no saber no es lo mismo que estar bien. */
-.badge {
-  font-size: 11px; padding: 2px 8px; border-radius: 10px; vertical-align: middle;
-  margin-left: 4px;
-  /* Sin esto, "sin verificar" se parte en dos líneas y el pill se sale de la tarjeta
-     cuando el nombre del flow es largo. */
-  display: inline-block; white-space: nowrap;
-}
-.badge.ok { background: #122117; color: #56d364; }
-.badge.bad { background: #3d1418; color: #ff7b72; }
-.badge.unknown { background: #21262d; color: #8b949e; border: 1px dashed #484f58; }
-
-.validation {
-  border: 1px solid #30363d; border-left-width: 3px; border-radius: 8px;
-  padding: 10px 14px; margin-bottom: 16px; font-size: 13px;
-}
-.validation.ok { border-left-color: #238636; }
-.validation.bad { border-left-color: #f85149; }
-.validation.unknown { border-left-color: #8b949e; }
-.validation-head { display: flex; align-items: center; gap: 10px; }
-.validation .provider { color: #8b949e; }
-.validation .provider strong { color: #c9d1d9; }
-.validation-error, .validation-ok { color: #8b949e; margin-top: 8px; }
-.issues { list-style: none; margin-top: 10px; }
-.issues li { padding: 4px 0; border-top: 1px solid #21262d; }
-.issue-level, .issue-block {
-  font-size: 11px; padding: 1px 6px; border-radius: 4px; margin-right: 8px;
-}
-.issue-level { background: #3d1418; color: #ff7b72; text-transform: uppercase; }
-.issues li.warning .issue-level { background: #3b2300; color: #d29922; }
-.issue-block { background: #21262d; color: #8b949e; }
 
 main { flex: 1; padding: 20px; overflow-y: auto; }
 .placeholder { color: #8b949e; margin-top: 60px; text-align: center; }

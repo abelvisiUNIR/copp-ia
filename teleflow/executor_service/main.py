@@ -10,12 +10,10 @@ Endpoints:
   GET  /entities/{type}/{id}/360         — vista 360
 """
 import uuid
-from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,14 +37,12 @@ state: dict[str, Any] = {}
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI):
     settings = get_settings()
     sessionmaker = init_db(settings)
     domain_loader = DomainLoader(sessionmaker, get_parser(),
                                  ttl_seconds=settings.domain_cache_ttl)
-    event_bus = EventBus(settings.rabbitmq_url, settings.events_exchange,
-                         max_attempts=settings.event_max_attempts,
-                         retry_base_delay=settings.event_retry_base_delay)
+    event_bus = EventBus(settings.rabbitmq_url, settings.events_exchange)
     entity_service = EntityService(sessionmaker, domain_loader, event_bus)
     engine = ExecutionEngine(sessionmaker, domain_loader, event_bus,
                              entity_service, settings)
@@ -59,9 +55,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.warning("rabbitmq_unavailable_at_startup", error=str(exc))
     await engine.start()
     await rule_engine.start()
-    # Los gauges de negocio NO se publican acá: los publica `metrics-service`, que corre con
-    # una sola réplica. Este servicio corre con tres, y los gauges llevan el valor absoluto, así
-    # que publicarlos en cada réplica hacía que el dashboard leyera 3× todo el negocio.
 
     state.update(engine=engine, rule_engine=rule_engine, entities=entity_service,
                  view360=view360, bus=event_bus, domain=domain_loader)
@@ -78,7 +71,9 @@ setup_observability(app, "executor-service", ready_check=db_ping)
 
 
 @app.exception_handler(DomainError)
-async def domain_error_handler(request: Request, exc: DomainError) -> JSONResponse:
+async def domain_error_handler(request: Request, exc: DomainError):
+    from fastapi.responses import JSONResponse
+
     return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
 
 
@@ -90,28 +85,18 @@ class ExecuteRequest(BaseModel):
     version: str = "latest"
     payload: dict[str, Any] = Field(default_factory=dict)
     correlation_id: str | None = None
-    # Alternativa al header `Idempotency-Key`, para quien llame al executor directo.
-    idempotency_key: str | None = None
 
 
 @app.post("/execute", status_code=202)
-async def execute(
-    req: ExecuteRequest,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-) -> dict[str, Any]:
-    """Dispara un proceso. Con `Idempotency-Key`, reintentar no crea una instancia nueva.
-
-    El header manda sobre el campo del cuerpo: es la convención que los clientes conocen.
-    """
+async def execute(req: ExecuteRequest) -> dict[str, Any]:
     engine: ExecutionEngine = state["engine"]
     return await engine.trigger(req.flow_name, req.version, req.payload,
-                                req.correlation_id,
-                                idempotency_key or req.idempotency_key)
+                                req.correlation_id)
 
 
 @app.post("/internal/execute", status_code=202, include_in_schema=False)
 async def internal_execute(req: ExecuteRequest) -> dict[str, Any]:
-    return await execute(req, idempotency_key=None)
+    return await execute(req)
 
 
 @app.get("/instances")

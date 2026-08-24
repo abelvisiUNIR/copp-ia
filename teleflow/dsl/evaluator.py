@@ -109,22 +109,22 @@ def evaluate(node: Any, ctx: Mapping[str, Any],
 
 def _compare(op: str, left: Any, right: Any) -> bool:
     if op == "==":
-        return bool(left == right)
+        return left == right
     if op == "!=":
-        return bool(left != right)
+        return left != right
     if op == "in":
         return right is not None and left in right
     if left is None or right is None:
         return False
     try:
         if op == ">=":
-            return bool(left >= right)
+            return left >= right
         if op == "<=":
-            return bool(left <= right)
+            return left <= right
         if op == ">":
-            return bool(left > right)
+            return left > right
         if op == "<":
-            return bool(left < right)
+            return left < right
     except TypeError:
         return False
     raise EvaluationError(f"Operador desconocido: {op}")

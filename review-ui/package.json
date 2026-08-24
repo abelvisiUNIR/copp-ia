@@ -6,16 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview",
-    "test": "playwright test",
-    "test:install": "playwright install --with-deps chromium"
+    "preview": "vite preview"
   },
   "dependencies": {
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@playwright/test": "^1.62.0",
     "@vitejs/plugin-react": "^4.3.1",
     "vite": "^5.3.1"
   }
