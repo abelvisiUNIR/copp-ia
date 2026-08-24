@@ -1,51 +1,22 @@
-{{/*
-  Migraciones de Alembic.
-
-  Historia de por qué esto NO es un hook de Helm, que costó dos intentos:
-
-  1. Era `pre-install`. No podía funcionar: en `pre-install` no existe ningún recurso del
-     release —ni el Postgres del subchart ni el Secret—. El síntoma no fue un error claro sino
-     un cuelgue: el pod queda en CreateContainerConfigError reintentando crear el contenedor, y
-     `backoffLimit` NO aplica (el contenedor nunca arranca, así que no hay intento que contar),
-     de modo que el Job se queda en `Running` hasta que Helm se rinde por timeout.
-
-  2. Se probó `post-install`. Peor: deadlock. Helm corre los hooks `post-install` DESPUÉS de
-     esperar a que los recursos estén listos, y los servicios no se ponen listos sin schema (el
-     executor consulta `process_instances` en el startup y muere). Los pods en CrashLoopBackOff
-     esperando una migración que esperaba a los pods.
-
-  3. Lo que queda: un Job normal, sin hook. Helm lo crea junto con todo lo demás; el Job espera
-     a Postgres por su initContainer y cada servicio espera a su schema por el propio
-     (`teleflow.waitForSchema`). Nadie depende del orden en que Helm aplica los recursos.
-
-  Efecto secundario bueno: en un upgrade, los pods nuevos no arrancan hasta que el schema esté
-  en `head`, así que el orden "schema primero, código después" queda garantizado por el pod y
-  no por la ceremonia del deploy.
-
-  El nombre lleva `.Release.Revision` para que cada upgrade cree un Job nuevo en vez de choca
-  contra el anterior (los Jobs son inmutables).
-*/}}
 {{- if .Values.migrations.enabled }}
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ .Release.Name }}-migrate-{{ .Release.Revision }}
+  name: teleflow-migrate-{{ .Release.Revision }}
   labels:
     {{- include "teleflow.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
   backoffLimit: 3
   template:
-    metadata:
-      labels:
-        {{- include "teleflow.labels" . | nindent 8 }}
     spec:
       restartPolicy: Never
-      initContainers:
-        {{- include "teleflow.waitForDb" . | nindent 8 }}
       containers:
         - name: migrate
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["alembic", "upgrade", "head"]
           env:
             {{- include "teleflow.env" . | nindent 12 }}

@@ -5,10 +5,16 @@ type: application
 version: 1.0.0
 appVersion: "1.0.0"
 
-# Sin dependencias a propósito. Postgres, Redis y RabbitMQ eran subcharts de Bitnami y ahora son
-# StatefulSets propios (`templates/datos.yaml`), con **las mismas imágenes oficiales que usa el
-# docker-compose.yml**. Motivo en el ADR de la wiki "de dónde salen Postgres, Redis y RabbitMQ en
-# el chart de Helm" (2026-07-30): las imágenes que pedían los subcharts fueron retiradas de Docker
-# Hub, y al investigarlo apareció que dev/CI y producción no compartían la capa de datos.
-#
-# Consecuencia práctica: ya no hace falta `helm dependency update` antes de instalar.
+dependencies:
+  - name: postgresql
+    version: "15.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled
+  - name: redis
+    version: "19.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: redis.enabled
+  - name: rabbitmq
+    version: "14.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: rabbitmq.enabled

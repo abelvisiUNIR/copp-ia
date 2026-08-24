@@ -5,7 +5,6 @@ en los eventos de log (se pasan como kwargs en cada llamada).
 """
 import logging
 import sys
-from typing import cast
 
 import structlog
 
@@ -25,8 +24,8 @@ def setup_logging(service_name: str) -> structlog.stdlib.BoundLogger:
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
-    return cast(structlog.stdlib.BoundLogger, structlog.get_logger(service=service_name))
+    return structlog.get_logger(service=service_name)
 
 
 def get_logger(**initial_values: object) -> structlog.stdlib.BoundLogger:
-    return cast(structlog.stdlib.BoundLogger, structlog.get_logger(**initial_values))
+    return structlog.get_logger(**initial_values)

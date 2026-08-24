@@ -2,8 +2,6 @@
 
 Valida sintaxis (Lark LALR) y semántica. Nunca ejecuta nada.
 """
-from typing import Any
-
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
@@ -33,9 +31,9 @@ class IssueOut(BaseModel):
 class ParseResponse(BaseModel):
     valid: bool
     checksum: str
-    ast: dict[str, Any] | None = None
+    ast: dict | None = None
     issues: list[IssueOut] = Field(default_factory=list)
-    summary: dict[str, Any] = Field(default_factory=dict)
+    summary: dict = Field(default_factory=dict)
 
 
 @app.post("/parse", response_model=ParseResponse)

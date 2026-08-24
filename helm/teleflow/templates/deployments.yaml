@@ -1,41 +1,23 @@
 {{- range $name, $svc := .Values.services }}
-{{- $fullName := printf "%s-%s" $.Release.Name $name }}
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ $fullName }}
+  name: {{ $name }}
   labels:
-    app: {{ $fullName }}
+    app: {{ $name }}
     {{- include "teleflow.labels" $ | nindent 4 }}
 spec:
-  {{- if and $.Values.autoscaling.enabled (eq $name "executor-service") }}
-  # Sin `replicas` a propósito: lo gobierna el HorizontalPodAutoscaler. Declararlo igual haría
-  # que cada `helm upgrade` devolviera la escala al número de `values.yaml` y el HPA la volviera
-  # a subir — un pod que aparece y desaparece en cada deploy, sin que nada falle ni se loguee.
-  {{- else }}
   replicas: {{ $svc.replicas }}
-  {{- end }}
   selector:
     matchLabels:
-      app: {{ $fullName }}
+      app: {{ $name }}
   template:
     metadata:
       labels:
-        app: {{ $fullName }}
+        app: {{ $name }}
         {{- include "teleflow.labels" $ | nindent 8 }}
-      {{- if $.Values.observabilidad.scrapeAnnotations }}
-      annotations:
-        # Descubrimiento por anotaciones: lo lee la configuración clásica de `kubernetes_sd`.
-        # Son inertes si el organismo no las mira, y sin ellas los servicios no aparecen en
-        # ningún Prometheus salvo que alguien los agregue a mano.
-        prometheus.io/scrape: "true"
-        prometheus.io/port: {{ $svc.port | quote }}
-        prometheus.io/path: /metrics
-      {{- end }}
     spec:
-      initContainers:
-        {{- include "teleflow.waitForSchema" $ | nindent 8 }}
       containers:
         - name: {{ $name }}
           image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
@@ -69,21 +51,15 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ $fullName }}
+  name: {{ $name }}
   labels:
-    app: {{ $fullName }}
+    app: {{ $name }}
     {{- include "teleflow.labels" $ | nindent 4 }}
 spec:
-  {{- if $svc.external }}
-  type: {{ $.Values.gateway.service.type }}
-  {{- else }}
-  type: ClusterIP
-  {{- end }}
+  type: {{ if $svc.external }}LoadBalancer{{ else }}ClusterIP{{ end }}
   selector:
-    app: {{ $fullName }}
+    app: {{ $name }}
   ports:
-    # El nombre importa: el ServiceMonitor referencia el puerto por nombre, no por número.
-    - name: http
-      port: {{ $svc.port }}
+    - port: {{ $svc.port }}
       targetPort: {{ $svc.port }}
 {{- end }}

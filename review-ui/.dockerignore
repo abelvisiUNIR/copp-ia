@@ -1,9 +1,0 @@
-# `COPY . .` corre después de `npm ci`, así que copiar node_modules pisa la instalación
-# reproducible con lo que haya en la máquina de quien buildea — y son cientos de MB de
-# contexto, más ahora que Playwright es devDependency.
-node_modules
-dist
-
-# Salidas de los tests de UI
-test-results
-playwright-report

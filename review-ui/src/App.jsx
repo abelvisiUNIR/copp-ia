@@ -40,15 +40,6 @@ export default function App() {
   }
 
   const approve = async () => {
-    // Aprobar un borrador que no compila es un deploy que va a fallar. No se bloquea
-    // (puede haberse editado fuera, o el parser puede haber estado caído), pero tiene que
-    // ser una decisión consciente y no un click de más.
-    if (selected.validation?.parses !== true) {
-      const estado = selected.validation?.parses === false
-        ? 'NO compila según el parser'
-        : 'no se pudo verificar contra el parser'
-      if (!confirm(`Este borrador ${estado}. ¿Aprobar y desplegar igual?`)) return
-    }
     const version = prompt('Versión a publicar (semver):', '1.0.0')
     if (!version) return
     const actor = prompt('Tu usuario (actor_id):', 'dev')
@@ -106,7 +97,6 @@ export default function App() {
                   onClick={() => open(d.draft_id)}>
                 <strong>{d.name}</strong>
                 <span className={`status ${d.status}`}>{d.status}</span>
-                <ValidationBadge validation={d.validation} />
                 <p>{d.description?.slice(0, 80)}</p>
               </li>
             ))}
@@ -128,8 +118,6 @@ export default function App() {
                 )}
               </div>
               <p className="desc">{selected.description}</p>
-              <ValidationPanel validation={selected.validation}
-                               provider={selected.provider} />
               <DiffView oldText={baseSource} newText={selected.source} />
             </>
           ) : (
@@ -137,56 +125,6 @@ export default function App() {
           )}
         </main>
       </div>
-    </div>
-  )
-}
-
-// `parses` tiene tres estados y los tres importan: compila, no compila, y no se pudo
-// verificar (parser caído, o borrador anterior a que se validara). "No sé" no se muestra
-// como "está bien": esa confusión es justo lo que hace que un borrador roto llegue a la
-// revisión sin que nadie lo sepa.
-function validationState(validation) {
-  if (validation?.parses === true) return { cls: 'ok', label: 'compila' }
-  if (validation?.parses === false) return { cls: 'bad', label: 'no compila' }
-  return { cls: 'unknown', label: 'sin verificar' }
-}
-
-function ValidationBadge({ validation }) {
-  const { cls, label } = validationState(validation)
-  return <span className={`badge ${cls}`}>{label}</span>
-}
-
-function ValidationPanel({ validation, provider }) {
-  const { cls } = validationState(validation)
-  const issues = validation?.issues || []
-  return (
-    <div className={`validation ${cls}`}>
-      <div className="validation-head">
-        <ValidationBadge validation={validation} />
-        <span className="provider">
-          generado por <strong>{provider || 'desconocido'}</strong>
-          {provider === 'stub' && ' — esqueleto para editar a mano, no lo escribió un modelo'}
-        </span>
-      </div>
-      {validation?.error && (
-        <p className="validation-error">
-          No se pudo consultar al parser: {validation.error}
-        </p>
-      )}
-      {issues.length > 0 && (
-        <ul className="issues">
-          {issues.map((issue, i) => (
-            <li key={i} className={issue.level}>
-              <span className="issue-level">{issue.level}</span>
-              {issue.block && <span className="issue-block">{issue.block}</span>}
-              {issue.message}
-            </li>
-          ))}
-        </ul>
-      )}
-      {issues.length === 0 && cls === 'ok' && (
-        <p className="validation-ok">Sin observaciones del parser.</p>
-      )}
     </div>
   )
 }
