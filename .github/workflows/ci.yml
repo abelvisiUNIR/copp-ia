@@ -1,0 +1,282 @@
+name: CI
+
+on:
+  push:
+    branches: [desarrollo, devyos]
+  pull_request:
+    branches: [desarrollo]
+
+# Cancela corridas viejas del mismo ref si llega una nueva
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Tests + mypy (strict, py3.11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"   # target del proyecto (pyproject requires-python >=3.11)
+          cache: pip
+
+      - name: Install (con extras dev)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Type check (mypy --strict)
+        # Todo el repo, no solo `teleflow`: los tests también se chequean (sin exigirles
+        # anotaciones, ver [tool.mypy.overrides] en pyproject.toml). Correr solo `teleflow`
+        # dejaba fuera 58-35 archivos y ocultaba errores reales en los tests.
+        run: mypy .
+
+      - name: Tests unitarios
+        run: pytest -m "not e2e" -q
+
+  e2e:
+    name: Tests e2e (stack docker compose)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Levantar el stack
+        run: |
+          cp .env.example .env
+          docker compose up --build -d
+
+      # Las reglas de alerta no las cubre pytest: `promtool test rules` las evalúa contra series
+      # sintéticas y comprueba que **disparen** en el escenario correcto. Sin esto, una regla con
+      # un nombre de métrica mal escrito pasa CI y no dispara nunca — indistinguible de un
+      # sistema sano.
+      #
+      # Va en este job y no en `quality` aunque no necesite el stack levantado: corre promtool
+      # desde la **imagen que el `up --build` de arriba acaba de construir**, así que no hay
+      # ningún pull. En `quality` sí lo había, y una corrida se puso roja con exit 125 por un
+      # timeout contra registry-1.docker.io teniendo mypy y los tests en verde. Un gate rápido
+      # que falla por el registry es peor que uno lento que no falla — y este repo ya sabe que
+      # Docker Hub no es una dependencia confiable (las imágenes de los subcharts de Bitnami
+      # desaparecieron de ahí y rompieron un artefacto que nadie había tocado).
+      #
+      # Es la imagen **construida** y no su base `prom/prometheus:vX`: con BuildKit, `compose
+      # build` deja la base en su caché de build y **no** en el image store, así que un
+      # `docker run` sobre ella falla con "No such image" aunque el build haya pasado recién.
+      # Costó una corrida en rojo descubrirlo. La imagen construida, en cambio, tiene que estar
+      # sí o sí — el stack está corriendo con ella.
+      #
+      # Efecto lateral bueno: promtool sale del mismo artefacto que va a evaluar estas reglas
+      # en el compose, así que la versión coincide por construcción y no hay que sincronizarla
+      # con nada.
+      - name: Alertas de Prometheus (promtool test rules)
+        run: |
+          docker compose run --rm --no-deps -v "$PWD:/repo" -w /repo/observability \
+            --entrypoint promtool prometheus test rules alerts_test.yml
+
+      - name: Esperar readiness del gateway
+        run: |
+          for i in $(seq 1 40); do
+            curl -sf http://localhost:8000/health && exit 0
+            sleep 3
+          done
+          echo "gateway no respondió a tiempo" && docker compose logs && exit 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install (con extras dev)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Tests e2e
+        run: pytest -m e2e -q
+
+      # La review-ui se prueba contra el mismo stack: nginx ya sirve el bundle en :3100.
+      # Es el componente desde el que se despliega código, así que su camino crítico
+      # (aprobar despliega ese borrador, rechazar no despliega) merece cubrirse.
+      - name: Set up Node 20
+        uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: review-ui/package-lock.json
+
+      - name: Instalar review-ui + Chromium
+        working-directory: review-ui
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Tests de UI
+        working-directory: review-ui
+        run: npm test
+
+      - name: Reporte de UI si algo falla
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: review-ui/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Logs del stack si algo falla
+        if: failure()
+        run: docker compose logs
+
+  docker-build:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build imagen de servicios Python
+        run: docker build -t teleflow:ci .
+
+  chart:
+    name: Chart (render en los modos que soporta)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: azure/setup-helm@v4
+
+      # El chart soporta dos capas de datos —la propia y la del organismo— y hasta ahora solo se
+      # renderizaba la propia. El camino externo se rompe de formas que no se ven leyendo el
+      # diff: un puerto que quedó fijo, credenciales que salen del bloque del componente que no
+      # se instala, un `secretKeyRef` con la clave vacía que deja el pod en
+      # CreateContainerConfigError. Todo eso lo muestra un render y nada más.
+      - name: Render en los modos soportados
+        run: |
+          set -e
+          render() { helm template t helm/teleflow --set apiKey=x "$@"; }
+
+          echo "--- propio (default) ---"
+          render > /dev/null
+
+          echo "--- externo: puerto, credenciales y TLS propios ---"
+          salida=$(render --set postgres.enabled=false \
+            --set externalDatabase.host=pg.ext --set externalDatabase.port=6432 \
+            --set externalDatabase.username=tf --set externalDatabase.password=pw \
+            --set externalDatabase.database=db --set externalDatabase.sslMode=verify-full)
+          echo "$salida" | grep -q 'postgresql+asyncpg://tf:pw@pg.ext:6432/db?ssl=verify-full' \
+            || { echo "la URL externa no toma puerto/credenciales/TLS"; exit 1; }
+          echo "$salida" | grep -q 'host, port = "pg.ext", 6432' \
+            || { echo "el initContainer no espera al puerto externo"; exit 1; }
+
+          # Lo que hace utilizable el camino externo en serio: que la credencial de una base
+          # administrada no quede en el spec del pod.
+          echo "--- externo con Secret del organismo ---"
+          conSecret=$(render --set postgres.enabled=false --set externalDatabase.host=pg.ext \
+            --set externalDatabase.password=NO-DEBE-APARECER \
+            --set externalDatabase.existingSecret=pg-creds)
+          if echo "$conSecret" | grep -q NO-DEBE-APARECER; then
+            echo "la password quedó en el render pese al existingSecret"; exit 1
+          fi
+          echo "$conSecret" | grep -q 'key: "DATABASE_URL"' \
+            || { echo "no se consume la URL del Secret del organismo"; exit 1; }
+
+          # La contraseña de la capa de datos propia tiene que existir SOLO dentro de su Secret.
+          # Antes se interpolaba en el env de cada pod y aparecía 28 veces, visible para
+          # cualquiera con permiso de `get pod`.
+          echo "--- la password de la capa de datos vive solo en su Secret ---"
+          conPass=$(render --set postgres.auth.password=P4SS --set rabbitmq.auth.password=R4BB)
+
+          # Las 4 esperadas son las claves del Secret (POSTGRES_PASSWORD, DATABASE_URL,
+          # RABBITMQ_PASSWORD, RABBITMQ_URL). Cualquier otra es una fuga.
+          apariciones=$(echo "$conPass" | grep -cE 'P4SS|R4BB')
+          if [ "$apariciones" -ne 4 ]; then
+            echo "la password aparece $apariciones veces; se esperaban 4 (las claves del Secret):"
+            echo "$conPass" | grep -nE 'P4SS|R4BB'
+            exit 1
+          fi
+
+          # Y ninguna puede estar en un `value:`, que es como llega al spec del pod.
+          if echo "$conPass" | grep -E 'P4SS|R4BB' | grep -q 'value:'; then
+            echo "hay una password interpolada en el env de un pod:"
+            echo "$conPass" | grep -nE 'P4SS|R4BB' | grep 'value:'
+            exit 1
+          fi
+
+          echo "--- externo a medio configurar: tiene que fallar y decir qué falta ---"
+          if render --set postgres.enabled=false --set externalDatabase.host=pg.ext \
+               --set externalDatabase.existingSecret=pg-creds --set externalDatabase.urlKey= \
+               2>&1 | grep -q 'urlKey'; then
+            echo "ok: falla nombrando la clave que falta"
+          else
+            echo "un existingSecret sin urlKey debería cortar el install"; exit 1
+          fi
+
+          # El chart corta el install si `existingSecret` se declara y el Secret no existe —
+          # antes ese caso daba "Install complete" con todos los pods en
+          # CreateContainerConfigError. La comprobación usa `lookup`, que **sin cluster devuelve
+          # vacío igual que si el objeto faltara**, así que se sondea kube-system para
+          # distinguir los dos casos. Esto verifica esa parte: un render offline con
+          # `existingSecret` tiene que salir igual, o este mismo job se cae.
+          echo "--- render offline con existingSecret declarado ---"
+          helm template t helm/teleflow --set existingSecret=cualquiera > /dev/null \
+            || { echo "el render offline se rompe con existingSecret: la guarda no distingue 'no hay cluster' de 'no está el Secret'"; exit 1; }
+
+          # ---- Autoescalado del executor -----------------------------------------------
+          #
+          # El HPA es opt-in y el default es que NO exista. Lo que se verifica acá no es que
+          # el YAML salga bien formado, sino las dos formas en que este objeto se rompe sin
+          # que nada falle: que aparezca cuando nadie lo pidió, y que conviva con un
+          # `replicas` fijo que se lo pise en cada upgrade.
+          echo "--- por default no hay HPA ---"
+          sinHpa=$(render)
+          if echo "$sinHpa" | grep -q HorizontalPodAutoscaler; then
+            echo "el HPA se está creando sin que nadie lo pida"; exit 1
+          fi
+
+          conHpa=$(render --set autoscaling.enabled=true)
+
+          # Aísla un documento del render por kind + nombre. Hace falta mirar documento por
+          # documento y no el render entero: `replicas:` aparece en varios, y un grep global
+          # da por bueno el de otro objeto.
+          doc() { awk -v k="$1" -v n="$2" 'BEGIN{RS="\n---\n"} $0 ~ "kind: "k && $0 ~ "\n  name: "n"\n"'; }
+
+          echo "--- con el HPA prendido, el Deployment del executor no fija replicas ---"
+          # Si `replicas` sigue declarado, cada `helm upgrade` devuelve la escala al valor de
+          # values.yaml y el HPA la vuelve a subir: pods que aparecen y desaparecen en cada
+          # deploy, sin error ni log que lo delate.
+          if echo "$conHpa" | doc Deployment t-executor-service | grep -q "^  replicas:"; then
+            echo "el executor fija replicas y el HPA se las va a pelear"; exit 1
+          fi
+
+          echo "--- pero sin HPA sí las fija, o el deploy queda en manos de nadie ---"
+          echo "$sinHpa" | doc Deployment t-executor-service | grep -q "^  replicas: 3" \
+            || { echo "sin autoscaling el executor tiene que fijar sus 3 réplicas"; exit 1; }
+
+          echo "--- y metrics-service sigue en una sola réplica ---"
+          # Publica gauges de valor absoluto: dos publicadores hacen leer el doble todo número
+          # de negocio, sin que nada falle ni se loguee.
+          echo "$conHpa" | doc Deployment t-metrics-service | grep -q "^  replicas: 1" \
+            || { echo "metrics-service dejó de estar en 1 réplica"; exit 1; }
+
+          echo "--- el HPA apunta al backlog que publica el código, no a CPU ---"
+          # El nombre tiene que ser el mismo que emite `business_metrics.py`. Si alguien
+          # renombra la métrica de un lado, esto lo caza acá y no en producción.
+          echo "$conHpa" | grep -q 'name: teleflow_executor_backlog' \
+            || { echo "el HPA no usa la métrica de backlog"; exit 1; }
+          grep -q '"teleflow_executor_backlog"' teleflow/executor_service/business_metrics.py \
+            || { echo "el chart pide una métrica que el código no publica"; exit 1; }
+          if echo "$conHpa" | grep -A3 'type: External' | grep -qi 'cpu'; then
+            echo "volvió a aparecer CPU como señal de escalado"; exit 1
+          fi
+
+          echo "--- configuraciones que no pueden escalar: tienen que cortar el install ---"
+          for caso in "autoscaling.maxReplicas=1" "autoscaling.metricName=" \
+                      "autoscaling.backlogPorPod=0" "autoscaling.ventanaSubidaSegundos=10"; do
+            if render --set autoscaling.enabled=true --set "$caso" > /dev/null 2>&1; then
+              echo "'$caso' debería cortar el install y no lo hizo"; exit 1
+            fi
+          done
+          echo "ok: las cuatro cortan"

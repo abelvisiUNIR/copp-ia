@@ -7,21 +7,70 @@ uiImage:
   repository: registry.example.com/teleflow/review-ui
   tag: "1.0.0"
 
-apiKeySecret: teleflow-secrets  # debe contener TELEFLOW_API_KEY y LLM_API_KEY
+# Credenciales. Hay que definir UNA de las dos: `apiKey` (el chart crea el Secret) o
+# `existingSecret` (el organismo lo administra por fuera, con las claves TELEFLOW_API_KEY y
+# opcionalmente LLM_API_KEY). Si faltan las dos, el `helm install` falla diciendo el motivo —
+# a propósito: una key por default que funciona deja la instalación arriba y a nadie enterado.
+apiKey: ""
+llmApiKey: ""
+existingSecret: ""
 
+# Dominio del cluster. Solo lo necesita el nginx del review-ui, que resuelve el gateway por
+# FQDN (su `resolver` no aplica la lista `search` de /etc/resolv.conf).
+clusterDomain: cluster.local
+
+# Ni los URLs de Postgres/Redis/RabbitMQ ni los de los servicios entre sí se declaran acá: los
+# deriva `_helpers.tpl` del nombre del release, igual que los nombra cada subchart. Cuando
+# estaban hardcodeados (`teleflow-postgresql`, `http://parser-service:8001`) el chart solo
+# funcionaba si el release se llamaba `teleflow`, y sin decirlo en ninguna parte.
 env:
-  DATABASE_URL: postgresql+asyncpg://teleflow:teleflow@teleflow-postgresql:5432/teleflow
-  REDIS_URL: redis://teleflow-redis-master:6379/0
-  RABBITMQ_URL: amqp://teleflow:teleflow@teleflow-rabbitmq:5672/
-  PARSER_URL: http://parser-service:8001
-  REGISTRY_URL: http://registry-service:8003
-  EXECUTOR_URL: http://executor-service:8002
-  COMPOSER_URL: http://composer-service:8004
-  GATEWAY_URL: http://api-gateway:8000
   LLM_PROVIDER: stub
   WORKER_CONCURRENCY: "10"
 
-# Réplicas según sección 9.1 del documento de arquitectura
+# Capa de datos administrada por el organismo. Se usa poniendo en `false` el `enabled` del
+# componente de abajo (`postgres.enabled: false`, …).
+#
+# Este es el camino recomendado para producción en el caso de Postgres: un organismo que ya
+# opera una base administrada tiene HA de verdad, con guardia que la atiende, y eso es mejor que
+# cualquier cosa que declare este chart. Ver el ADR de la wiki "hasta dónde llega el HA de la
+# capa de datos que entrega la plataforma" (2026-08-08).
+#
+# `host` es obligatorio aun con `existingSecret`, porque los initContainers esperan a que el
+# host acepte conexiones antes de arrancar los pods.
+#
+# `existingSecret` + `urlKey`: el organismo pone la **URL completa** en un Secret que administra
+# él (típico con un gestor tipo Vault) y el chart la consume por referencia, así la contraseña
+# no queda en el spec del pod. Sin él, la URL se arma acá y **la contraseña viaja en texto plano
+# en el env del pod** — límite conocido, pendiente del ítem de secrets de Fase E.
+externalDatabase:
+  host: ""
+  port: 5432
+  username: teleflow
+  database: teleflow
+  password: ""
+  sslMode: ""             # p.ej. `require` o `verify-full`; vacío = sin TLS
+  existingSecret: ""
+  urlKey: DATABASE_URL
+
+externalRedis:
+  host: ""
+  port: 6379
+  tls: false              # true = rediss://
+  existingSecret: ""
+  urlKey: REDIS_URL
+
+externalRabbitmq:
+  host: ""
+  port: 5672
+  username: teleflow
+  password: ""
+  vhost: "/"
+  tls: false              # true = amqps://
+  existingSecret: ""
+  urlKey: RABBITMQ_URL
+
+# Réplicas según la sección 10.2 del documento de arquitectura
+# (docs/teleflow-deployment.typ).
 services:
   api-gateway:
     port: 8000
@@ -44,30 +93,188 @@ services:
     port: 8004
     replicas: 1
     module: teleflow.composer_service.main:app
+  # NO ESCALAR. Publica los gauges de negocio, que llevan el valor absoluto, y el dashboard suma
+  # entre pods: con 2 réplicas todo número de negocio se lee al doble, sin que nada falle ni se
+  # loguee. Estuvo dentro del executor (3 réplicas) y por eso se leía 3×. La exclusión es
+  # topológica a propósito — se intentó coordinar por advisory lock y no alcanzó, porque dos
+  # ciclos que no se solapan en el tiempo no se excluyen entre sí.
+  metrics-service:
+    port: 8005
+    replicas: 1
+    module: teleflow.metrics_service.main:app
+
+# Autoescalado del executor. **Apagado a propósito**, y esa es la decisión, no un olvido.
+#
+# Por qué no escala por CPU: está medido y la CPU no sirve como señal acá. El techo del
+# executor no es CPU sino `WORKER_CONCURRENCY` —un semáforo por réplica— y el servicio es
+# I/O-bound: lo que sobra se queda esperando el semáforo, no compitiendo por CPU. Con el mismo
+# throughput saturado, cuadruplicar la cola (de 12 s a 48 s de espera) movió la CPU de 296 m a
+# 351 m, un 19 %; y a media capacidad, sin nadie esperando, ya tocaba el 94 % del request de
+# 100 m. Un `averageUtilization` escalaría con carga inofensiva y se quedaría quieto justo
+# cuando la cola se dispara.
+#
+# Por qué viene apagado aun con la señal correcta: se puede demostrar que el backlog crece,
+# pero **no** que sumar réplicas lo drene. La réplica que recibe el `POST /execute` es la que
+# ejecuta esa instancia, así que un pod nuevo atiende disparos nuevos y no toca lo que ya está
+# encolado en otro pod. Prenderlo por default prometería una elasticidad que nadie probó
+# rompiéndola — el mismo criterio con el que se decidió el alcance del HA de la capa de datos.
+#
+# Prenderlo requiere que el organismo exponga `metricName` como métrica externa (Prometheus
+# Adapter o equivalente). Si no está, el HPA queda sin métrica y no escala: no rompe nada, pero
+# tampoco hace nada. Y ojo con el ritmo: el gauge se refresca cada `BUSINESS_METRICS_INTERVAL`
+# (30 s por default), así que el HPA nunca ve el backlog con menos de esa antigüedad. Por eso
+# las ventanas de estabilización de abajo no bajan de ese valor.
+autoscaling:
+  enabled: false
+  minReplicas: 3
+  maxReplicas: 10
+  # Instancias compitiendo por un worker que se toleran **por pod** antes de sumar réplicas.
+  # Con `WORKER_CONCURRENCY: 10`, un valor de 20 significa "hasta dos tandas de espera".
+  backlogPorPod: 20
+  # Nombre de la métrica externa, tal como la tiene que publicar el adapter del organismo.
+  # Es la que emite `metrics-service`: excluye durable sleep a propósito (una instancia
+  # dormida esperando a un humano no ocupa worker, y escalar por ella es puro desperdicio).
+  metricName: teleflow_executor_backlog
+  # Ventanas de estabilización, en segundos. Bajar es reaccionar a un número viejo.
+  ventanaSubidaSegundos: 60
+  ventanaBajadaSegundos: 300
+
+# Cómo se entra al gateway desde fuera del cluster. La doc (§10.2) dice "detrás de
+# Ingress/LoadBalancer" y el chart no tenía ninguno de los dos: era `type: LoadBalancer` fijo,
+# que en kind queda `<pending>` para siempre. En local: `kubectl port-forward`.
+gateway:
+  service:
+    type: ClusterIP
+  ingress:
+    enabled: false
+    className: ""
+    host: teleflow.local
+    annotations: {}
+    # TLS del borde. Con `enabled: true` es **obligatorio**, salvo que el organismo termine el
+    # TLS más arriba y lo declare con `allowInsecure: true`: publicar el gateway en claro manda
+    # la API key en un header. El `hosts` tiene que incluir `host` de arriba — si no coincide,
+    # el Ingress se crea igual y el controller sirve su certificado default.
+    #
+    #   tls:
+    #     - secretName: teleflow-tls
+    #       hosts: [teleflow.organismo.gub.uy]
+    #
+    # El Secret lo puede crear el organismo, o cert-manager por anotación en `annotations`.
+    tls: []
+    allowInsecure: false
 
 reviewUi:
   enabled: true
   port: 3100
-  replicas: 1
+  replicas: 2
+
+# Observabilidad. El chart trae los **puntos de integración**, no un stack de monitoreo: un
+# organismo con Kubernetes casi siempre ya tiene Prometheus y Grafana, y meterle un segundo le
+# duplica infraestructura y parte las métricas en dos lugares. Un organismo que no tenga nada
+# necesita instalar algo como kube-prometheus-stack aparte — este chart no se lo resuelve.
+observabilidad:
+  # Anotaciones prometheus.io/* en los pods. Inertes si nadie las mira, así que vienen puestas.
+  scrapeAnnotations: true
+  serviceMonitor:
+    # Requiere el CRD del Prometheus Operator: encenderlo sin el operator instalado hace
+    # fallar el install. Por eso no viene puesto.
+    enabled: false
+    interval: 30s
+    # Muchas instalaciones exigen una etiqueta para que su Prometheus adopte el ServiceMonitor
+    # (p. ej. `release: kube-prometheus-stack`). Sin la etiqueta correcta se crea y se ignora.
+    labels: {}
+  dashboards:
+    # ConfigMap con los dashboards, para el sidecar de Grafana. Sin sidecar no molesta, pero
+    # tampoco sirve, así que es opt-in.
+    enabled: false
+    label: grafana_dashboard
+    labelValue: "1"
+  prometheusRule:
+    # Las alertas de `alerts/alerts.yml` como PrometheusRule. Mismo CRD del Operator que el
+    # ServiceMonitor y misma razón para no venir puesto: sin el operator, el install falla.
+    #
+    # Encenderlo **con** el ServiceMonitor apagado deja la alerta de disponibilidad muda: sin
+    # ServiceMonitor no hay etiqueta `platform`, y la regla filtra por ella. Las dos de negocio
+    # sí funcionan (miran nombres de métrica, no etiquetas).
+    enabled: false
+    # Igual que en el ServiceMonitor: muchas instalaciones exigen una etiqueta (p. ej.
+    # `release: kube-prometheus-stack`) para que su Prometheus adopte la regla. Sin ella se crea
+    # y se ignora — el peor de los casos, porque `kubectl get prometheusrule` la muestra.
+    labels: {}
 
 migrations:
-  enabled: true  # Job alembic upgrade head (hook pre-install/pre-upgrade)
+  enabled: true  # Job `alembic upgrade head` (Job normal, NO hook — ver migrate-job.yaml)
+  # Segundos que un initContainer espera a que Postgres acepte conexiones antes de rendirse.
+  waitForDbSeconds: 120
+  # Segundos que cada servicio espera a que el schema llegue a `head` antes de rendirse.
+  waitForSchemaSeconds: 300
 
-postgresql:
+# Capa de datos. Las imágenes son **las mismas del docker-compose.yml** a propósito: antes esto
+# eran tres subcharts de Bitnami y el compose usaba las oficiales, así que los e2e probaban una
+# capa de datos distinta de la de producción. Si cambia una, cambia la otra: lo verifica
+# `tests/test_imagenes_contract.py`, así que un bump de un solo lado se pone rojo y no hay que
+# acordarse.
+#
+# Poner `enabled: false` y llenar el `external*.host` de arriba para usar una base que el
+# organismo ya administra.
+postgres:
   enabled: true
+  image: postgres:16-alpine
   auth:
     username: teleflow
-    password: teleflow
+    password: teleflow      # ← pendiente Fase E: sacarlo de values a un Secret
     database: teleflow
+  persistence:
+    size: 8Gi
+    storageClass: ""        # vacío = la StorageClass default del cluster
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
 
 redis:
   enabled: true
-  architecture: standalone
-  auth:
-    enabled: false
+  image: redis:7-alpine
+  # Sin `persistence`: es cache y pub/sub, el durable sleep vive en Postgres (ADR-002).
+  # Igual que en el compose, que tampoco le da volumen.
+  #
+  # **Una sola réplica, y es un punto único de fallo. Decidido, no olvidado.** §10.2 sugiere
+  # Sentinel; no se hizo porque (a) lo que Redis guarda acá no es estado de negocio —contadores
+  # de rate limit, pub/sub de revocación de keys, estado compartido del gateway—, así que
+  # perderlo **degrada** en vez de perder expedientes, y (b) Sentinel exige además cambiar el
+  # cliente: `aioredis.from_url()` no lo habla. Un organismo que quiera HA acá tiene el camino
+  # externo (`redis.enabled: false` + `externalRedis`), que es el mismo argumento que con
+  # Postgres. Ver el ADR de la wiki sobre el alcance del HA (2026-08-08).
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
 
 rabbitmq:
   enabled: true
+  image: rabbitmq:3.13-management-alpine
+  # 3 por default, como pide §10.2 — y a propósito **no** 1: si producción tuviera que acordarse
+  # de subirlo, el default sería un punto único de fallo silencioso. Para dev o un cluster de un
+  # solo nodo (kind), `--set rabbitmq.replicas=1`: forma cluster de uno y las colas quorum
+  # quedan con un solo replicante, que es lo que se puede dar en esa topología.
+  replicas: 3
+  # Credencial con la que los nodos se autentican entre sí. Vacío = el chart genera una y
+  # **la conserva** entre upgrades (ver templates/rabbitmq-cluster.yaml). Fijarla acá solo si
+  # el organismo la administra por fuera.
+  erlangCookie: ""
   auth:
     username: teleflow
-    password: teleflow
+    password: teleflow      # ← pendiente Fase E: sacarlo de values a un Secret
+  persistence:
+    size: 8Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi

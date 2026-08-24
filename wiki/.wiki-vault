@@ -1,0 +1,6 @@
+{
+  "alias": "copp-ia",
+  "type": "single-repo",
+  "repos": ["copp-ia"],
+  "created": "2026-06-30"
+}

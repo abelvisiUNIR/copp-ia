@@ -16,6 +16,14 @@ class Settings(BaseSettings):
 
     # Auth
     teleflow_api_key: str = "dev-key-change-me"
+    # Permisos de la key global. `*` = todos (default: no rompe instalaciones existentes).
+    # Restringir es una decisión explícita del operador, p.ej. para una integración que solo
+    # lee: `TELEFLOW_API_KEY_SCOPES=entities:read,instances:read`.
+    # Scopes válidos: ver teleflow/gateway/auth.py
+    teleflow_api_key_scopes: str = "*"
+    # Las demás keys viven en la tabla `api_keys` (una por integración, hasheadas).
+    # El TTL del cache es también la ventana máxima que sobrevive una key revocada.
+    api_key_cache_ttl: int = 30
 
     # URLs internas entre servicios
     parser_url: str = "http://parser-service:8001"
@@ -29,12 +37,47 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = ""
     llm_base_url: str = ""
+    # Techo de tokens de la respuesta. Un `.tflow` completo entra holgado en 4096; subirlo
+    # tiene sentido para flows grandes. Si la respuesta se corta, el composer lo dice en vez
+    # de guardar un borrador truncado.
+    llm_max_tokens: int = 4096
+    # Reintentos ante fallos **transitorios** del proveedor (5xx, 408, 429, red). Lo
+    # permanente (4xx, credencial mala) falla en el primer intento.
+    llm_retry_attempts: int = 3
+    llm_retry_base_delay: float = 1.0
+    llm_retry_max_delay: float = 20.0
 
     # Executor
     worker_concurrency: int = 10
     timer_scan_interval: int = 60
     domain_cache_ttl: int = 30
+    # Cada cuánto se recalculan los gauges de negocio (instancias vivas, backlog de
+    # human_tasks). Es una agregación sobre el working set de `process_instances`, no sobre
+    # toda la historia. Prometheus scrapea cada 15 s: bajar de eso no agrega resolución.
+    business_metrics_interval: int = 30
+    # Segundos que vale el derecho a ejecutar una instancia. El dueño lo renueva mientras
+    # trabaja; si el proceso muere, otra réplica puede tomarla recién cuando vence. Bajarlo
+    # acelera la recuperación tras una caída y sube el riesgo de que una renovación demorada
+    # (GC, DB lenta) deje que otro se la lleve; subirlo, al revés.
+    instance_lease_seconds: int = 60
     events_exchange: str = "teleflow.domain.events"
+
+    # Bus de eventos: reintentos antes de mandar el evento a la DLQ (<queue>.dlq).
+    # La cola lleva sufijo de versión: cambiar sus argumentos (x-dead-letter-exchange,
+    # x-queue-type) sobre una cola ya declarada da PRECONDITION_FAILED en RabbitMQ.
+    #
+    # v1 -> v2 (2026-08-08): la cola pasa a `quorum` para que sobreviva a la caída del nodo que
+    # la aloja. La v1 queda en el broker con lo que tuviera: **no se migran los mensajes en
+    # vuelo**, así que conviene drenarla antes de desplegar (o consumirla a mano después).
+    rules_queue: str = "teleflow.rules.v2"
+    event_max_attempts: int = 3
+    event_retry_base_delay: float = 1.0
+
+    # Reintentos de steps: cuántos los decide el DSL (`retries:` del step); acá van
+    # los tiempos. Backoff exponencial con full jitter, topeado a max_delay.
+    # Solo se reintentan errores transitorios (5xx/408/429/timeout/red).
+    step_retry_base_delay: float = 1.0
+    step_retry_max_delay: float = 30.0
 
     # Gateway
     rate_limit_rpm: int = 120

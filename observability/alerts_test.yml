@@ -1,0 +1,120 @@
+# Tests unitarios de las reglas de alerta (`promtool test rules alerts_test.yml`).
+#
+# Existen porque `promtool check rules` solo dice que el YAML y la sintaxis PromQL están bien:
+# una alerta sobre una métrica mal escrita pasa el check y **nunca dispara**. Un archivo de
+# alertas roto no se distingue de un sistema sano — misma familia que el resto de fallas
+# silenciosas del proyecto.
+#
+# Ojo con la línea de tiempo: en promtool el reloj arranca en el epoch 0, así que `time()` en
+# `eval_time: 10m` vale 600. Por eso el caso "fresco" usa una serie que avanza 15 por muestra
+# (el mismo paso que el intervalo): así `time() - valor` da 0, igual que un servicio que refresca
+# a tiempo.
+# Las reglas viven dentro del chart (Helm solo lee archivos de adentro del chart); este archivo
+# se queda afuera para no empaquetar un test en el release. Por eso la ruta relativa, y por eso
+# promtool se corre montando la **raíz** del repo — ver el paso "Alertas" del CI.
+rule_files:
+  - ../helm/teleflow/alerts/alerts.yml
+
+evaluation_interval: 15s
+
+tests:
+  # --- El caso sano: refrescos al día, ninguna alerta ---------------------------------------
+  - interval: 15s
+    name: con los gauges refrescándose no se alerta
+    input_series:
+      - series: 'up{platform="teleflow", instance="metrics-service:8005", job="teleflow"}'
+        values: '1+0x40'
+      - series: 'teleflow_business_metrics_last_success_timestamp_seconds'
+        values: '0+15x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: TeleFlowMetricasDeNegocioCongeladas
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: TeleFlowSinPublicadorDeMetricasDeNegocio
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: TeleFlowServicioCaido
+        exp_alerts: []
+
+  # --- El caso que motivó todo: pod vivo, gauges congelados ---------------------------------
+  # `up` se mantiene en 1 durante toda la prueba: es exactamente el punto. La alerta de
+  # disponibilidad calla —correctamente, el servicio responde— y aun así el negocio está siendo
+  # informado con un número viejo.
+  - interval: 15s
+    name: un pod vivo que dejó de refrescar sí dispara, y up no lo detecta
+    input_series:
+      - series: 'up{platform="teleflow", instance="metrics-service:8005", job="teleflow"}'
+        values: '1+0x40'
+      - series: 'teleflow_business_metrics_last_success_timestamp_seconds'
+        values: '0+15x12 180+0x28'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: TeleFlowServicioCaido
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: TeleFlowMetricasDeNegocioCongeladas
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "Los gauges de negocio están congelados hace 7m 0s"
+              description: >-
+                metrics-service responde pero no logra refrescar los gauges de negocio. Lo que
+                muestran los paneles es el último valor bueno, no el estado actual — tratarlo
+                como desactualizado, no como real. Causa típica: Postgres inalcanzable desde el
+                pod. Confirmar con el contador
+                teleflow_business_metrics_refresh_failures_total (sube si el refresh está
+                fallando; queda quieto si el colector nunca arrancó) y con los logs
+                `business_metrics_error` del servicio.
+
+  # --- El caso que ya ocurrió: el publicador no está en ninguna parte ------------------------
+  # Sin la serie no hay nada que evaluar: la regla de frescura calla sola. Pasó de verdad al
+  # mover el colector a su propio servicio.
+  - interval: 15s
+    name: sin publicador de métricas de negocio se alerta, y la frescura no alcanza
+    input_series:
+      - series: 'up{platform="teleflow", instance="api-gateway:8000", job="teleflow"}'
+        values: '1+0x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: TeleFlowMetricasDeNegocioCongeladas
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: TeleFlowSinPublicadorDeMetricasDeNegocio
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Nadie está publicando las métricas de negocio"
+              description: >-
+                No existe la serie teleflow_business_metrics_last_success_timestamp_seconds. O
+                metrics-service no está desplegado, o no está en los targets de Prometheus. Los
+                paneles de negocio muestran "No data", que se lee igual que "no hay trabajo
+                pendiente" — la lectura tranquilizadora equivocada.
+
+  # --- Disponibilidad, y que el filtro por plataforma no sea decorativo ----------------------
+  - interval: 15s
+    name: un target caído dispara, y uno ajeno a teleflow no
+    input_series:
+      - series: 'up{platform="teleflow", instance="executor-service:8002", job="teleflow"}'
+        values: '1+0x8 0+0x32'
+      - series: 'up{instance="camunda:9090", job="otro-proyecto"}'
+        values: '0+0x40'
+      - series: 'teleflow_business_metrics_last_success_timestamp_seconds'
+        values: '0+15x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: TeleFlowServicioCaido
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              platform: teleflow
+              instance: executor-service:8002
+              job: teleflow
+            exp_annotations:
+              summary: "executor-service:8002 no responde al scrape"
+              description: >-
+                Prometheus no puede scrapear executor-service:8002 desde hace 2 minutos. Si es
+                metrics-service, además de perder sus métricas los paneles de negocio quedan sin
+                datos: corre en una sola réplica a propósito y no tiene quien lo reemplace.

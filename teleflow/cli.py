@@ -14,6 +14,7 @@ Comandos:
   tflow compose <nombre> --description "..."
   tflow drafts
   tflow approve <draft_id> --version 1.0.0
+  tflow openapi [--output docs/openapi.json]
 """
 from __future__ import annotations
 
@@ -145,7 +146,29 @@ def cmd_approve(args: argparse.Namespace) -> None:
     _print(response.json())
 
 
+def cmd_openapi(args: argparse.Namespace) -> None:
+    """Exporta el contrato OpenAPI del gateway.
+
+    Importa la app en vez de pegarle a `/openapi.json`: el contrato sale del código, así
+    que no hace falta el stack levantado (ni en la máquina, ni en CI).
+    """
+    from teleflow.gateway.main import app   # import diferido: el resto del CLI no lo necesita
+
+    spec = app.openapi()
+    destino = Path(args.output)
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    destino.write_text(json.dumps(spec, indent=2, ensure_ascii=False) + "\n",
+                       encoding="utf-8")
+    print(f"OpenAPI -> {destino} ({len(spec['paths'])} paths)")
+
+
 def main() -> None:
+    # Forzar UTF-8 en la salida: en consolas Windows (cp1252) imprimir ✓/✗ crashea.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8")
+
     parser = argparse.ArgumentParser(prog="tflow",
                                      description="TeleFlow CLI — Business & Software as Code")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -196,6 +219,10 @@ def main() -> None:
     p.add_argument("--version", required=True)
     p.add_argument("--actor", default="cli")
     p.set_defaults(func=cmd_approve)
+
+    p = sub.add_parser("openapi", help="exporta el contrato OpenAPI del gateway")
+    p.add_argument("--output", default="docs/openapi.json")
+    p.set_defaults(func=cmd_openapi)
 
     args = parser.parse_args()
     try:

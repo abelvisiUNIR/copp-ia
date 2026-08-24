@@ -1,0 +1,63 @@
+{{- if .Values.autoscaling.enabled }}
+{{- $a := .Values.autoscaling }}
+{{- $intervalo := int (default 30 (get .Values.env "BUSINESS_METRICS_INTERVAL")) }}
+
+{{- /*
+Un HPA que no puede escalar es peor que ninguno: queda en el cluster, se ve en `kubectl get
+hpa` y no hace nada. Estas guardas cortan el install nombrando lo que falta, en vez de dejar
+un objeto decorativo.
+*/}}
+{{- if lt (int $a.maxReplicas) (int $a.minReplicas) }}
+{{- fail (printf "autoscaling.maxReplicas (%v) es menor que minReplicas (%v): el HPA no podría escalar" $a.maxReplicas $a.minReplicas) }}
+{{- end }}
+{{- if not $a.metricName }}
+{{- fail "autoscaling.enabled requiere autoscaling.metricName: sin métrica el HPA no tiene con qué decidir" }}
+{{- end }}
+{{- if lt (int $a.backlogPorPod) 1 }}
+{{- fail (printf "autoscaling.backlogPorPod (%v) tiene que ser >= 1: un objetivo de 0 pide escalar para siempre" $a.backlogPorPod) }}
+{{- end }}
+
+{{- /*
+El gauge se refresca cada BUSINESS_METRICS_INTERVAL, así que el HPA nunca lee un backlog más
+fresco que eso. Una ventana más corta que el refresco hace tomar la misma muestra vieja varias
+veces y escalar de más por un número que todavía no cambió.
+*/}}
+{{- if lt (int $a.ventanaSubidaSegundos) $intervalo }}
+{{- fail (printf "autoscaling.ventanaSubidaSegundos (%v) es menor que BUSINESS_METRICS_INTERVAL (%v): el HPA reaccionaría dos veces a la misma muestra" $a.ventanaSubidaSegundos $intervalo) }}
+{{- end }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}-executor-service
+  labels:
+    app: {{ .Release.Name }}-executor-service
+    {{- include "teleflow.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Release.Name }}-executor-service
+  minReplicas: {{ $a.minReplicas }}
+  maxReplicas: {{ $a.maxReplicas }}
+  metrics:
+    # External y no Resource: la señal es el trabajo encolado, no el consumo del pod. Ver el
+    # bloque `autoscaling` de values.yaml para por qué la CPU quedó descartada con medición.
+    - type: External
+      external:
+        metric:
+          name: {{ $a.metricName }}
+        target:
+          # AverageValue: kubernetes divide el backlog total por la cantidad de pods, así que
+          # el objetivo se expresa por pod y no hay que reajustarlo cada vez que cambia la
+          # cantidad de réplicas.
+          type: AverageValue
+          averageValue: {{ $a.backlogPorPod | quote }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: {{ $a.ventanaSubidaSegundos }}
+    scaleDown:
+      # Bajar tarda más que subir a propósito: una instancia en vuelo la ejecuta el pod que la
+      # tomó, así que apagar un pod con trabajo encima lo deja huérfano hasta que vence el
+      # lease y otra réplica lo recupera.
+      stabilizationWindowSeconds: {{ $a.ventanaBajadaSegundos }}
+{{- end }}

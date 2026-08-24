@@ -7,7 +7,9 @@ el deploy de un flow se refleja en segundos sin reiniciar el servicio.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from prometheus_client import Counter, Gauge
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -19,11 +21,26 @@ from teleflow.dsl.parser import TeleFlowParser
 log = get_logger(component="domain-loader")
 
 
+# Un flow que no parsea desaparece del dominio: sus procesos y rules dejan de existir
+# sin que ninguna instancia falle. Tiene que ser visible, no solo una línea de log.
+DOMAIN_PARSE_FAILURES = Counter(
+    "teleflow_domain_parse_failures_total",
+    "Flows registrados que no parsean al cargar el dominio",
+    ["flow_name"],
+)
+DOMAIN_BROKEN_FLOWS = Gauge(
+    "teleflow_domain_broken_flows",
+    "Flows del dominio actual que no se pudieron parsear",
+)
+
+
 @dataclass
 class Domain:
     merged: FlowFile
     # process_name -> (flow_name, flow_version)
     process_index: dict[str, tuple[str, str]]
+    # flows registrados que no parsean: su contenido NO está en `merged`
+    broken_flows: list[str] = field(default_factory=list)
 
 
 class DomainLoader:
@@ -45,6 +62,7 @@ class DomainLoader:
 
         merged = FlowFile()
         process_index: dict[str, tuple[str, str]] = {}
+        broken_flows: list[str] = []
         async with self._sessionmaker() as session:
             latests = (await session.execute(select(FlowLatest))).scalars().all()
             for latest in latests:
@@ -58,12 +76,18 @@ class DomainLoader:
                     continue
                 flow = self._parse_cached(row.checksum, row.source, row.name)
                 if flow is None:
+                    broken_flows.append(row.name)
                     continue
                 merged = merged.merge(flow)
                 for proc_name in flow.processes:
                     process_index[proc_name] = (row.name, row.version)
 
-        self._cache = Domain(merged=merged, process_index=process_index)
+        DOMAIN_BROKEN_FLOWS.set(len(broken_flows))
+        if broken_flows:
+            log.error("domain_degraded", broken_flows=broken_flows,
+                      detail="sus procesos y rules no existen para el executor")
+        self._cache = Domain(merged=merged, process_index=process_index,
+                             broken_flows=broken_flows)
         self._cached_at = time.monotonic()
         return self._cache
 
@@ -74,6 +98,7 @@ class DomainLoader:
             flow = self._parser.parse(source)
         except Exception as exc:  # flow corrupto registrado: no rompe el dominio
             log.error("domain_parse_failed", flow_name=name, error=str(exc))
+            DOMAIN_PARSE_FAILURES.labels(name).inc()
             return None
         self._parsed[csum] = flow
         if len(self._parsed) > 200:

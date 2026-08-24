@@ -1,0 +1,98 @@
+# values de producción — plantilla por organismo (ADR-005: una instancia por organismo).
+#
+# La doc de arquitectura (docs/teleflow-deployment.typ §10.1) documenta el deploy como
+# `helm upgrade --install teleflow ./helm/teleflow -f values-production.yaml`, pero este
+# archivo no existía en el repo: el comando de la doc fallaba con "file not found".
+#
+# Copiar, ajustar y guardar FUERA del repo (o en el repo de infraestructura del organismo).
+# No commitear un archivo con credenciales reales.
+
+image:
+  repository: registry.example.com/teleflow/teleflow   # ← el registry del organismo
+  # Una versión fija, y sobre todo **inmutable**. Con un tag que se reescribe (`latest`, `dev`,
+  # `main`) más `pullPolicy: IfNotPresent`, `helm upgrade` reporta `deployed` y **los pods
+  # siguen con el código viejo**: el pod spec no cambió, así que Kubernetes no tiene motivo
+  # para rotarlos y no hay nada que avise. Verificado en el work-stream de Fase E.
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+uiImage:
+  repository: registry.example.com/teleflow/review-ui
+  tag: "1.0.0"
+
+# Credenciales. En producción se espera `existingSecret`: el Secret lo crea y lo rota el
+# organismo (o su gestor de secretos), y el chart solo lo consume. Debe tener la clave
+# TELEFLOW_API_KEY y, si el composer usa un proveedor real, LLM_API_KEY.
+#
+#   kubectl -n teleflow create secret generic teleflow-secrets \
+#     --from-literal=TELEFLOW_API_KEY='...' --from-literal=LLM_API_KEY='...'
+#
+# Si en cambio se define `apiKey` acá, el chart crea el Secret — pero entonces la key queda
+# en este archivo, que es exactamente lo que hay que evitar.
+existingSecret: teleflow-secrets
+
+env:
+  LLM_PROVIDER: stub          # anthropic | openai | ollama | stub
+  WORKER_CONCURRENCY: "10"
+
+# Entrada externa. La doc (§10.2) pone el gateway detrás de Ingress.
+gateway:
+  service:
+    type: ClusterIP
+  ingress:
+    enabled: true
+    className: nginx
+    host: teleflow.organismo.gub.uy       # ← el dominio del organismo
+    annotations: {}
+    # TLS obligatorio con el Ingress prendido: sin esto el install **corta**, porque publicar el
+    # gateway en claro manda la API key en un header. Este archivo lo deja vacío a propósito —
+    # el certificado es del organismo y no puede venir de un values versionado. Hay que definir
+    # uno de los dos antes de instalar:
+    #
+    #   tls:
+    #     - secretName: teleflow-tls
+    #       hosts: [teleflow.organismo.gub.uy]   # tiene que coincidir con `host` de arriba
+    #
+    #   allowInsecure: true                      # si el TLS lo termina un balanceador más arriba
+    tls: []
+
+# Autoescalado del executor: **apagado también en producción**, y a propósito.
+#
+# No es una omisión pendiente como las de abajo: está medido y decidido. La CPU no sirve como
+# señal (el techo del executor es `WORKER_CONCURRENCY`, un semáforo, y el servicio es
+# I/O-bound), y aunque la señal de backlog existe y funciona, nadie demostró todavía que sumar
+# réplicas drene una cola ya formada — la instancia la ejecuta la réplica que recibió el
+# `POST /execute`. Prenderlo requiere, además, que el organismo publique la métrica externa.
+#
+# Mientras esté apagado, la capacidad se ajusta con las dos perillas que sí están medidas:
+# `WORKER_CONCURRENCY` (cuánto hace cada réplica a la vez) y `services.executor-service.replicas`.
+autoscaling:
+  enabled: false
+
+# La capa de datos (Postgres, Redis, RabbitMQ) ya no se configura acá: son StatefulSets del
+# propio chart, con las mismas imágenes oficiales que usa el docker-compose.yml. Para apuntar a
+# una base que el organismo ya administra, poner `postgres.enabled: false` y `externalDatabase`.
+
+# Lo que este archivo NO resuelve, y por qué. La lista anterior daba por pendientes tres cosas
+# que ya están hechas — quedó vieja y engañaba a quien la leía para decidir si podía instalar.
+#
+#  * **HA de la capa de datos: decidido, no pendiente.** La plataforma entrega HA solo donde
+#    nadie más puede hacerlo. RabbitMQ va en cluster de 3 con quorum queues (el tipo de cola lo
+#    declara la aplicación: un broker administrado no lo arregla desde afuera), con failover
+#    medido. Postgres y Redis quedan en **1 réplica a propósito** —sin patroni casero— y la
+#    respuesta para producción es el camino externo: `postgres.enabled: false` + el bloque
+#    `externalDatabase`, que ya soporta puerto, TLS, credenciales y `existingSecret`.
+#
+#  * **Observabilidad: los puntos de integración están, el stack no.** El chart trae anotaciones
+#    de scrape, `ServiceMonitor`, ConfigMap de dashboards y `PrometheusRule` con las alertas,
+#    todo opt-in bajo `observabilidad`. Prometheus y Grafana no se instalan desde acá a
+#    propósito: en producción son del organismo.
+#
+#  * **Passwords de la capa de datos propia: siguen viniendo de `values` en texto plano.** Ya no
+#    llegan al spec de los pods —viven en su propio Secret y los pods lo referencian— pero el
+#    valor inicial sale de este archivo. Para que no exista en ningún archivo hay que usar la
+#    capa de datos del organismo con `external<Comp>.existingSecret`.
+#
+#  * **TLS del borde: es del organismo.** Ver el bloque `gateway.ingress` de arriba.
+#
+# El checklist completo de instalación está en `docs/checklist-instalacion.md`.

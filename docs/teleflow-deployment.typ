@@ -44,12 +44,20 @@ curl http://localhost:8000/health
     )[
       #text(size: 10pt, weight: "bold", fill: tf-accent, "Producción — Kubernetes / RKE2")
       #v(8pt)
-      #codeblock(lang: "bash", "# Deploy con Helm
+      #codeblock(lang: "bash", "# 1. El Secret PRIMERO: si no existe, el install corta
+kubectl create namespace teleflow
+kubectl -n teleflow create secret generic \\
+  teleflow-secrets \\
+  --from-literal=TELEFLOW_API_KEY='<valor>'
+
+# 2. Deploy con Helm
 helm upgrade --install teleflow \\
   ./helm/teleflow \\
   --namespace teleflow \\
-  --create-namespace \\
-  -f values-production.yaml
+  -f helm/teleflow/values-production.yaml \\
+  --set image.repository=<registry>/teleflow \\
+  --set image.tag=<tag-inmutable> \\
+  --set existingSecret=teleflow-secrets
 
 # Escalar executor
 kubectl scale deployment \\
@@ -59,7 +67,8 @@ kubectl scale deployment \\
       ")
       #v(8pt)
       #text(size: 8.5pt)[Namespace dedicado. StatefulSets para Postgres, Redis y RabbitMQ.
-      Deployments con 2-3 réplicas para los servicios sin estado.]
+      Deployments con 2-3 réplicas para los servicios sin estado. El checklist completo, con
+      los pasos previos de imágenes y TLS, está en #code("docs/checklist-instalacion.md").]
     ],
   )
 
@@ -103,6 +112,7 @@ kubectl scale deployment \\
       ("LLM_BASE_URL",        "No",  "—",                  "Para Ollama: http://host:11434"),
       ("WORKER_CONCURRENCY",  "No",  "10",                 "Semáforo del executor: instancias concurrentes"),
       ("TIMER_SCAN_INTERVAL", "No",  "60",                 "Segundos entre escaneos del rule engine on_timer"),
+      ("BUSINESS_METRICS_INTERVAL", "No", "30",            "Segundos entre recálculos de los gauges de negocio (backlog de human_tasks)"),
       ("RATE_LIMIT_RPM",      "No",  "120",                "Requests por minuto por API key en el gateway"),
       ("GRAFANA_PORT",        "No",  "3001",               "Puerto del host para Grafana (default 3001, no 3000)"),
       ("GRAFANA_PASSWORD",    "No",  "admin",              "Password del admin de Grafana"),

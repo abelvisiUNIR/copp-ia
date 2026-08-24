@@ -10,4 +10,20 @@ dist/
 build/
 node_modules/
 review-ui/dist/
+# Salidas de los tests de UI (Playwright)
+review-ui/test-results/
+review-ui/playwright-report/
 .DS_Store
+
+# Estado local de Obsidian (UI/workspace) — no se versiona
+wiki/.obsidian/
+wiki/Untitled.base
+
+# Capa transitoria del vault: diario, checkpoints y work-streams son personales.
+# Al repo compartido solo va wiki/Knowledge/ (ADRs, roadmap, guías).
+wiki/Journal/
+wiki/templates/
+
+# Respaldos locales de la base (ver scripts/backup.sh)
+backups/
+*.dump

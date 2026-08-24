@@ -5,6 +5,8 @@ x-python-env: &python-env
   REDIS_URL: redis://redis:6379/0
   RABBITMQ_URL: amqp://teleflow:${RABBITMQ_PASSWORD:-teleflow}@rabbitmq:5672/
   TELEFLOW_API_KEY: ${TELEFLOW_API_KEY:-dev-key-change-me}
+  TELEFLOW_API_KEY_SCOPES: ${TELEFLOW_API_KEY_SCOPES:-*}
+  API_KEY_CACHE_TTL: ${API_KEY_CACHE_TTL:-30}
   PARSER_URL: http://parser-service:8001
   REGISTRY_URL: http://registry-service:8003
   EXECUTOR_URL: http://executor-service:8002
@@ -16,6 +18,11 @@ x-python-env: &python-env
   LLM_BASE_URL: ${LLM_BASE_URL:-}
   WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-10}
   TIMER_SCAN_INTERVAL: ${TIMER_SCAN_INTERVAL:-60}
+  BUSINESS_METRICS_INTERVAL: ${BUSINESS_METRICS_INTERVAL:-30}
+  EVENT_MAX_ATTEMPTS: ${EVENT_MAX_ATTEMPTS:-3}
+  EVENT_RETRY_BASE_DELAY: ${EVENT_RETRY_BASE_DELAY:-1.0}
+  STEP_RETRY_BASE_DELAY: ${STEP_RETRY_BASE_DELAY:-1.0}
+  STEP_RETRY_MAX_DELAY: ${STEP_RETRY_MAX_DELAY:-30.0}
   RATE_LIMIT_RPM: ${RATE_LIMIT_RPM:-120}
 
 services:
@@ -43,11 +50,20 @@ services:
 
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
+    # RabbitMQ guarda los datos en `mnesia/rabbit@$HOSTNAME`, y sin esto el hostname es el ID
+    # del contenedor: al recrearlo cambia el nombre del nodo y el directorio anterior queda
+    # huérfano dentro del volumen. El volumen **solo** no alcanza — verificado.
+    hostname: rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: teleflow
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-teleflow}
     ports:
       - "15672:15672"
+    volumes:
+      # Sin esto, /var/lib/rabbitmq vive en la capa escribible del contenedor: las colas y la
+      # DLQ sobreviven a un `restart` pero **no** a recrear el contenedor (`up --build`). La
+      # app declara todo durable y persistente; el volumen es lo que lo hace cierto.
+      - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
@@ -108,6 +124,21 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Publica los gauges de negocio (backlog de human_tasks, instancias vivas). Va aparte del
+  # executor porque **tiene que correr en un solo proceso**: los gauges llevan el valor absoluto
+  # y el dashboard suma entre pods, así que dos procesos publicando hacen leer el doble. Con el
+  # colector dentro del executor y 3 réplicas en Kubernetes, todo número de negocio se leía 3×.
+  # No escalar este servicio.
+  metrics-service:
+    build: .
+    command: uvicorn teleflow.metrics_service.main:app --host 0.0.0.0 --port 8005
+    environment:
+      <<: *python-env
+      SERVICE_NAME: metrics-service
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   api-gateway:
     build: .
     command: uvicorn teleflow.gateway.main:app --host 0.0.0.0 --port 8000
@@ -133,15 +164,22 @@ services:
 # de bind mounts: las rutas con espacios rompen el file sharing en Windows.
   prometheus:
     build:
-      context: ./observability
-      dockerfile: prometheus.Dockerfile
+      # Contexto en la raíz, igual que grafana y por el mismo motivo: las reglas de alerta viven
+      # en helm/teleflow/alerts/ para que el chart pueda leerlas (Helm solo accede a archivos de
+      # adentro del chart) y no haya dos copias desincronizándose.
+      context: .
+      dockerfile: observability/prometheus.Dockerfile
     ports:
-      - "9090:9090"
+      # host configurable: 9090 es puerto popular (otro Prometheus, Camunda, etc.)
+      - "${PROMETHEUS_PORT:-9090}:9090"
 
   grafana:
     build:
-      context: ./observability
-      dockerfile: grafana.Dockerfile
+      # Contexto en la raíz: los dashboards viven en helm/teleflow/dashboards/ para que el
+      # chart pueda leerlos (Helm solo accede a archivos de adentro del chart) y no haya dos
+      # copias desincronizándose.
+      context: .
+      dockerfile: observability/grafana.Dockerfile
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
@@ -156,3 +194,4 @@ services:
 volumes:
   pgdata:
   grafana-data:
+  rabbitmq-data:

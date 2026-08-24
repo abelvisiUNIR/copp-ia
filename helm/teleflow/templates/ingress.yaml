@@ -1,0 +1,69 @@
+{{/*
+  Entrada externa al gateway.
+
+  La doc de arquitectura (§10.2) dice que el gateway va "detrás de Ingress/LoadBalancer", pero
+  el chart no tenía ninguno de los dos: el Service era `type: LoadBalancer` fijo. Eso deja el
+  Service en `<pending>` para siempre en cualquier cluster sin proveedor de LB (kind, kubeadm
+  pelado), sin que nada lo explique.
+
+  Ahora el tipo de Service es configurable (`gateway.service.type`, ClusterIP por default) y el
+  Ingress es opt-in. En local: `kubectl port-forward svc/<release>-api-gateway 8000:8000`.
+
+  El review-ui no se publica: se accede por port-forward o se agrega otro Ingress cuando haya
+  una decisión de dominio. Antes era LoadBalancer, o sea potencialmente expuesto sin haberlo
+  decidido — la UI desde la que se aprueba y despliega código.
+*/}}
+{{- if .Values.gateway.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-api-gateway
+  labels:
+    {{- include "teleflow.labels" . | nindent 4 }}
+  {{- with .Values.gateway.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.gateway.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{/*
+    El bloque `tls` se pasa tal cual, pero validado antes: un `tls` sin `secretName`, o cuyos
+    `hosts` no incluyan el host del Ingress, **no da error**. El Ingress se crea, el controller
+    sirve su certificado default y el fallo aparece recién en el navegador de un ciudadano, como
+    un error de nombre que nadie va a asociar con este values.
+
+    Y si `tls` está vacío, el Ingress publica el gateway **en claro** — con la API key viajando
+    en un header. Eso puede ser deliberado (TLS terminado más arriba, en un balanceador del
+    organismo), así que no se prohíbe: se exige decirlo con `allowInsecure`.
+  */}}
+  {{- if .Values.gateway.ingress.tls }}
+  {{- range .Values.gateway.ingress.tls }}
+  {{- if not .secretName }}
+  {{- fail "\n\ngateway.ingress.tls tiene una entrada sin `secretName`: el Ingress se crearía igual y el controller serviría su certificado default.\n" }}
+  {{- end }}
+  {{- end }}
+  {{- $host := .Values.gateway.ingress.host }}
+  {{- $hosts := list }}
+  {{- range .Values.gateway.ingress.tls }}{{ $hosts = concat $hosts (default (list) .hosts) }}{{ end }}
+  {{- if not (has $host $hosts) }}
+  {{- fail (printf "\n\ngateway.ingress.host es %q pero ningún bloque de gateway.ingress.tls lo lista en `hosts` (%v): el certificado no aplicaría a ese nombre y el navegador daría error de nombre.\n" $host $hosts) }}
+  {{- end }}
+  tls:
+    {{- toYaml .Values.gateway.ingress.tls | nindent 4 }}
+  {{- else if not .Values.gateway.ingress.allowInsecure }}
+  {{- fail "\n\ngateway.ingress.enabled=true sin `gateway.ingress.tls`: el gateway quedaría publicado en claro y la API key viaja en un header.\n  --set gateway.ingress.tls[0].secretName=<secret> --set gateway.ingress.tls[0].hosts[0]=<host>\n  o, si el TLS lo termina un balanceador del organismo: --set gateway.ingress.allowInsecure=true\n" }}
+  {{- end }}
+  rules:
+    - host: {{ required "gateway.ingress.enabled=true exige gateway.ingress.host" .Values.gateway.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-api-gateway
+                port:
+                  number: {{ (index .Values.services "api-gateway").port }}
+{{- end }}
