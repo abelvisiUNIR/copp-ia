@@ -151,3 +151,25 @@ def test_ast_serializable(parser, ceibal_source):
     data = to_jsonable(flow)
     text = json.dumps(data)
     assert '"_node": "EntityDef"' in text
+
+
+# Las unidades de tiempo aceptan singular y plural. La gramática solo tenía plural, así que
+# `timeout: 1 day` fallaba con un error de sintaxis por una letra — y es la forma natural de
+# escribirlo en castellano y en inglés. Apareció en un borrador del composer: el archivo entero
+# parseaba salvo esa línea.
+@pytest.mark.parametrize("unidad,segundos", [
+    ("1 second", 1), ("1 seconds", 1),
+    ("1 minute", 60), ("2 minutes", 120),
+    ("1 hour", 3600), ("2 hours", 7200),
+    ("1 day", 86400), ("3 days", 259200),
+    ("1 week", 604800), ("2 weeks", 1209600),
+])
+def test_las_unidades_de_tiempo_aceptan_singular_y_plural(parser, unidad, segundos):
+    src = f'''
+    process "p" {{
+      input {{ a: string required }}
+      stage "s" {{ mode: sequential steps [step.uno] }}
+    }}
+    step "uno" {{ type: human_task signals ["approve"] timeout: {unidad} }}
+    '''
+    assert parser.parse(src).steps["uno"].timeout_seconds == segundos
