@@ -407,7 +407,8 @@ async def _post_upstream(base_url: str, path: str,
 
 
 async def _proxy(request: Request, base_url: str, path: str,
-                 extra_headers: dict[str, str] | None = None) -> Response:
+                 extra_headers: dict[str, str] | None = None,
+                 timeout: float | None = None) -> Response:
     """Reenvía al servicio interno. Los headers se arman **desde cero**, no se copian los del
     cliente: así nada del exterior se cuela hacia adentro. Una ruta que necesita propagar un
     header concreto lo pasa por `extra_headers`, explícito y a la vista."""
@@ -422,6 +423,9 @@ async def _proxy(request: Request, base_url: str, path: str,
             content=body if body else None,
             params=dict(request.query_params),
             headers=headers,
+            # `None` = el timeout del cliente (60 s). Solo `/compose` lo sube: ver
+            # `compose_timeout` en la configuración.
+            timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
         )
     except httpx.RequestError:  # conexión rechazada, timeout, DNS
         return _bad_gateway(base_url)
@@ -761,7 +765,9 @@ async def relations(request: Request, rest: str) -> Response:
                tags=["composer"], operation_id="componer_draft",
                dependencies=[Depends(auth.require(auth.COMPOSE_WRITE))])
 async def compose(request: Request) -> Response:
-    return await _proxy(request, get_settings().composer_url, "/compose")
+    settings = get_settings()
+    return await _proxy(request, settings.composer_url, "/compose",
+                        timeout=settings.compose_timeout)
 
 
 @app.api_route("/drafts", methods=["GET"],
