@@ -120,3 +120,126 @@ main { flex: 1; padding: 20px; overflow-y: auto; }
 .line .gutter { display: inline-block; width: 18px; color: #8b949e; user-select: none; }
 .line.add { background: rgba(46, 160, 67, 0.18); }
 .line.del { background: rgba(248, 81, 73, 0.15); }
+
+/* ---------------------------------------------------------------- Operación
+   Sección operativa: bandeja de expedientes y su ficha. Reusa `.columns`,
+   `.draft-list`, `.status` y `.badge` de la revisión — son la misma app y no hay
+   motivo para tener dos vocabularios visuales. */
+
+.secciones { display: flex; gap: 6px; margin-left: 18px; margin-right: auto; }
+.secciones button { border-radius: 6px; }
+.secciones button.activo { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+
+.filtros { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.filtros button { padding: 4px 10px; font-size: 12px; }
+.filtros button.activo { background: #30363d; border-color: #58a6ff; }
+
+/* Los estados de una instancia son los del motor, no los de un borrador: se colorean por
+   lo que significan para quien opera — trabajo pendiente, trabajo detenido, trabajo hecho. */
+.status.WAITING_SIGNAL { background: #3b2300; color: #d29922; }
+.status.FAILED { background: #3d1418; color: #ff7b72; }
+.status.COMPLETED, .status.COMPENSATED { background: #122117; color: #56d364; }
+.status.IN_PROGRESS, .status.TRIGGERED, .status.RETRYING { background: #0d2b45; color: #58a6ff; }
+
+.firma { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.senal-otra {
+  background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
+  padding: 5px 9px; border-radius: 6px; width: 120px; font-size: 13px;
+}
+.hint { color: #8b949e; font-size: 12px; }
+
+.operador {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 16px; padding: 10px 12px;
+  border: 1px solid #30363d; border-radius: 8px; background: #10151c;
+}
+.operador label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.operador input {
+  background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
+  padding: 5px 9px; border-radius: 6px; width: 180px;
+}
+
+.panel-error {
+  border: 1px solid #30363d; border-left: 3px solid #ff7b72; border-radius: 8px;
+  padding: 12px 14px; margin-bottom: 16px; background: #1a1114;
+}
+.panel-error-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.panel-error p { font-size: 13px; color: #e6edf3; margin-bottom: 6px; }
+.panel-error p.hint { color: #8b949e; }
+.badge.warn { background: #3b2300; color: #d29922; }
+
+.timeline { border: 1px solid #30363d; border-radius: 8px; padding: 14px; }
+.timeline h3 { font-size: 14px; margin-bottom: 10px; }
+.timeline ol { list-style: none; }
+.timeline li {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  padding: 7px 0; border-bottom: 1px solid #21262d; font-size: 13px;
+}
+.timeline li:last-child { border-bottom: none; }
+.timeline li.esperando { color: #d29922; }
+.t-hora { color: #8b949e; font-size: 12px; min-width: 52px; font-variant-numeric: tabular-nums; }
+.t-actor { color: #8b949e; font-size: 12px; }
+.timeline code, .desc code, .firma code {
+  background: #21262d; padding: 1px 5px; border-radius: 4px; font-size: 12px;
+}
+
+.aside-acciones { display: flex; gap: 6px; }
+
+/* Formulario de alta, generado desde el `input` que declara el proceso. */
+.nuevo {
+  display: flex; flex-direction: column; gap: 10px;
+  border: 1px solid #30363d; border-radius: 8px; padding: 12px;
+  margin-bottom: 12px; background: #10151c;
+}
+.nuevo label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #8b949e; }
+.nuevo input, .nuevo select {
+  background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
+  padding: 6px 9px; border-radius: 6px; font-size: 13px; width: 100%;
+}
+.nuevo .req { color: #ff7b72; margin-left: 3px; }
+.nuevo button { align-self: flex-start; }
+.nuevo button:disabled { opacity: .5; cursor: not-allowed; }
+.approve { border-color: #238636; }
+
+/* ------------------------------------------------------------------ Dominio
+   La ficha 360: datos, relaciones, procesos en curso y alertas, en bloques
+   parejos. Los estados de una entidad los declara su lifecycle en el DSL, así
+   que no se pueden colorear uno por uno: se usa un neutro y el estado se lee. */
+
+.selector-tipo { display: flex; flex-direction: column; gap: 4px; font-size: 12px;
+  color: #8b949e; margin-bottom: 12px; }
+.selector-tipo select {
+  background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
+  padding: 6px 9px; border-radius: 6px; font-size: 13px;
+}
+
+.dominio .status {
+  background: #21262d; color: #adbac7; border: 1px solid #30363d;
+}
+
+.ficha-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px; margin-bottom: 16px;
+}
+.bloque { border: 1px solid #30363d; border-radius: 8px; padding: 12px 14px; }
+.bloque h3 { font-size: 13px; margin-bottom: 8px; color: #8b949e; }
+.bloque ul { list-style: none; }
+.bloque li { font-size: 13px; padding: 4px 0; display: flex; gap: 6px;
+  align-items: baseline; flex-wrap: wrap; }
+.campos li { justify-content: space-between; border-bottom: 1px solid #21262d; }
+.campos li:last-child { border-bottom: none; }
+.campos .k { color: #8b949e; font-size: 12px; }
+.campos .v { color: #e6edf3; }
+
+.bloque-head { display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 8px; }
+.bloque-head h3 { margin-bottom: 0; }
+.bloque-head button { padding: 3px 9px; font-size: 12px; }
+
+.lista-bloque li.rel { flex-direction: column; align-items: stretch; gap: 6px;
+  border-bottom: 1px solid #21262d; padding: 8px 0; }
+.lista-bloque li.rel:last-child { border-bottom: none; }
+.rel-datos { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+.rel-destino { color: #8b949e; }
+.rel-acciones { display: flex; gap: 6px; flex-wrap: wrap; }
+.rel-acciones button { padding: 3px 9px; font-size: 12px; }

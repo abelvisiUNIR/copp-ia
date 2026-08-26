@@ -1,8 +1,22 @@
 import React, { useEffect, useState } from 'react'
 import { api } from './api.js'
 import { lineDiff } from './diff.js'
+import Operacion from './ops.jsx'
+import Dominio from './dominio.jsx'
+
+// Tres secciones con públicos distintos en la misma app: **operación** (un gerente firma un
+// expediente), **dominio** (el sujeto del negocio: personas, cursos, vínculos) y **revisión**
+// (un desarrollador aprueba y despliega código). Comparten build porque separarlas costaría
+// una imagen, un servicio y un deployment más, sin ganar seguridad: el corte real lo hacen los
+// scopes del gateway, que son distintos para cada una y se validan del lado del servidor. Una
+// clave de operador recibe 403 en el deploy aunque tenga el botón a la vista.
+//
+// Lo que sí queda pendiente de decidir el día que el chart la publique: hoy `review-ui` no se
+// expone justamente porque desde acá se despliega código, y la sección operativa es la que
+// necesitaría ser alcanzable. Esa decisión es de exposición, no de código, y va con su ADR.
 
 export default function App() {
+  const [seccion, setSeccion] = useState('revision')
   const [drafts, setDrafts] = useState([])
   const [selected, setSelected] = useState(null)
   const [baseSource, setBaseSource] = useState('')
@@ -78,7 +92,21 @@ export default function App() {
   return (
     <div className="layout">
       <header>
-        <h1>TeleFlow <span>· revisión de flows generados por IA</span></h1>
+        <h1>TeleFlow</h1>
+        <nav className="secciones">
+          <button className={seccion === 'operacion' ? 'activo' : ''}
+                  onClick={() => { setSeccion('operacion'); setError(''); setInfo('') }}>
+            Operación
+          </button>
+          <button className={seccion === 'dominio' ? 'activo' : ''}
+                  onClick={() => { setSeccion('dominio'); setError(''); setInfo('') }}>
+            Dominio
+          </button>
+          <button className={seccion === 'revision' ? 'activo' : ''}
+                  onClick={() => { setSeccion('revision'); setError(''); setInfo('') }}>
+            Revisión de flows
+          </button>
+        </nav>
         <input
           className="apikey"
           type="password"
@@ -91,6 +119,13 @@ export default function App() {
       {error && <div className="banner error">{error}</div>}
       {info && <div className="banner info">{info}</div>}
 
+      {seccion === 'operacion' && <Operacion onError={setError} onInfo={setInfo} />}
+      {seccion === 'dominio' && <Dominio onError={setError} onInfo={setInfo} />}
+
+      {/* Se monta solo la sección activa. Con la otra oculta pero presente, las dos listas
+          conviven en el DOM y cualquiera —una prueba, un lector de pantalla, un atajo de
+          teclado— puede alcanzar la que no se está viendo. */}
+      {seccion === 'revision' && (
       <div className="columns">
         <aside>
           <div className="aside-head">
@@ -137,6 +172,7 @@ export default function App() {
           )}
         </main>
       </div>
+      )}
     </div>
   )
 }
