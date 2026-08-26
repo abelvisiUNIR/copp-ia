@@ -746,6 +746,17 @@ async def entities(request: Request, rest: str) -> Response:
     return await _proxy(request, get_settings().executor_url, f"/entities/{rest}")
 
 
+@app.get("/domain", tags=["entities"], operation_id="consultar_dominio",
+         dependencies=[Depends(auth.require(auth.ENTITIES_READ))])
+async def domain_summary(request: Request) -> Response:
+    """Las definiciones del dominio ya mergeadas: qué entidades y procesos existen.
+
+    Lleva `entities:read` y no un scope propio: son las **definiciones** del dominio, la misma
+    familia que consultar una entidad. Quien puede leer una ficha puede saber qué tipos hay.
+    """
+    return await _proxy(request, get_settings().executor_url, "/domain")
+
+
 @app.api_route("/relations/{rest:path}", methods=["GET"], tags=["entities"],
                operation_id="consultar_relations",
                dependencies=[Depends(auth.require_por_metodo(_ENTITY_SCOPES))])
