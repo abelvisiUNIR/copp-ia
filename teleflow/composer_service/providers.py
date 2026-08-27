@@ -27,6 +27,9 @@ REGLAS DE SINTAXIS QUE SE VIOLAN SEGUIDO — leelas antes de escribir:
   NUNCA se define un step adentro de un stage.
 - `from:` y `to:` de una relation apuntan a entity.nombre, no a estados.
 - Todo identificador en minúsculas con guion bajo: reclamo_tecnico, no ReclamoTecnico.
+- Los identificadores NO llevan tildes ni ñ: `notificacion`, nunca `notificación`. El texto
+  entre comillas sí las lleva y debe llevarlas: template: "Tu licencia fue aprobada."
+  Vale para nombres de bloque, de campo, de estado, de evento y de paso.
 - Un `process` solo lleva input, stage y on_complete. Nada más.
 
 EJEMPLO COMPLETO Y VÁLIDO — copiá esta estructura exactamente:
