@@ -243,3 +243,83 @@ main { flex: 1; padding: 20px; overflow-y: auto; }
 .rel-destino { color: #8b949e; }
 .rel-acciones { display: flex; gap: 6px; flex-wrap: wrap; }
 .rel-acciones button { padding: 3px 9px; font-size: 12px; }
+
+/* ------------------------------------------------- Corrección del borrador
+   El revisor veía el error con línea y columna y no tenía dónde corregirlo: tenía que salir a
+   una terminal a cambiar una línea. Editor deliberadamente pobre —un textarea—: lo que se
+   arregla acá son tres líneas, no se escribe un flow desde cero. */
+
+button.edit { background: #1f3a5f; border-color: #2d5a8f; }
+button.edit:hover { background: #2d5a8f; }
+
+.editor { border: 1px solid #30363d; border-radius: 8px; overflow: hidden; }
+.editor-head {
+  background: #161b22; padding: 8px 14px; border-bottom: 1px solid #30363d;
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+}
+.editor-label { font-size: 13px; color: #8b949e; }
+/* Ámbar, el mismo color que la espera de una firma en la bandeja: en las dos pantallas
+   significa "esto todavía no pasó". */
+.editor-label .sin-guardar { color: #d29922; font-style: normal; }
+.editor-actions { display: flex; gap: 8px; }
+/* La columna de números y el código comparten fuente, tamaño, altura de línea y padding
+   vertical. Si cualquiera de los cuatro difiere, los números se corren respecto del texto y
+   pasan a mentir — que es peor que no tenerlos. Van juntos acá a propósito, para que nadie
+   toque uno solo. Hay un test que compara los cuatro valores computados. */
+.editor-gutter, .editor-area {
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+/* La columna va **fuera del flujo**, no como columna flex: su contenido crece con el archivo,
+   así que en flujo estiraría el contenedor a la altura de todas las líneas y ya nada
+   scrollearía adentro — scrollearía la página. Posicionada, el alto lo manda el textarea (y su
+   `resize: vertical` sigue funcionando). */
+.editor-cuerpo { position: relative; background: #0d1117; }
+.editor-gutter {
+  position: absolute; top: 0; left: 0; bottom: 0;
+  width: 3.2em;                     /* alcanza hasta 9999 líneas */
+  padding-right: 10px;
+  text-align: right; color: #6e7681; background: #161b22;
+  border-right: 1px solid #30363d;
+  overflow: hidden;                 /* lo scrollea el textarea, no el usuario */
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+.editor-gutter .linea-error { color: #ff7b72; background: rgba(248, 81, 73, 0.15); }
+.editor-area {
+  display: block; width: 100%; min-height: 420px; resize: vertical;
+  background: transparent; color: #e6edf3; border: 0;
+  padding-left: calc(3.2em + 22px); padding-right: 14px;
+  white-space: pre; overflow: auto;
+}
+.editor-area:focus { outline: 2px solid #2d5a8f; outline-offset: -2px; }
+
+.badge.editado { background: #1f3a5f; color: #9dc3ee; }
+
+.selector-diff { display: flex; gap: 6px; margin-bottom: 10px; }
+.selector-diff button { font-size: 12px; padding: 4px 10px; }
+.selector-diff button.activo { background: #1f3a5f; border-color: #2d5a8f; }
+
+/* ------------------------------------------------ El error como camino al error
+   El mensaje del parser trae un fragmento del código con un `^` apuntando a la columna. Como
+   texto corrido los saltos se colapsan y el apuntador queda flotando al final: la información
+   llegaba y se destruía al renderizarla. En monoespaciada y con los saltos preservados, el
+   `^` cae donde tiene que caer. */
+
+.issue-msg { display: inline; }
+.issue-ctx {
+  margin: 6px 0 2px; padding: 8px 10px;
+  background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+  font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px;
+  line-height: 1.5; white-space: pre; overflow-x: auto; color: #e6edf3;
+}
+
+/* Decir "línea 43" y no poder ir ahí obliga a contar a mano. */
+button.ir-a-linea {
+  font-size: 11px; padding: 1px 8px; margin-right: 8px;
+  background: #1f3a5f; border-color: #2d5a8f; color: #9dc3ee;
+}
+button.ir-a-linea:hover { background: #2d5a8f; color: #e6edf3; }

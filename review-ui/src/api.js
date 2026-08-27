@@ -32,6 +32,12 @@ export const api = {
     request('POST', `/drafts/${id}/approve`, { version, actor_id, comment }),
   reject: (id, actor_id, comment) =>
     request('POST', `/drafts/${id}/reject`, { actor_id, comment }),
+  // Corregir la fuente a mano. El servidor **revalida** contra el parser real y devuelve el
+  // borrador ya con su veredicto nuevo: la pantalla nunca decide si algo compila.
+  // Lleva scope `flows:deploy`, no `compose:write` — aprobar despliega esta columna, así que
+  // reescribirla es la misma responsabilidad que desplegar.
+  editDraftSource: (id, source, actor_id, comment) =>
+    request('PATCH', `/drafts/${id}/source`, { source, actor_id, comment }),
   getLatestSource: async (name) => {
     try {
       const flow = await request('GET', `/flows/${name}/latest`)
