@@ -80,11 +80,15 @@ with_block: "with" "{" with_assign* "}"
 with_assign: NAME ":" expr
 
 duration: NUMBER time_unit
-?time_unit: "seconds" -> u_seconds
-          | "minutes" -> u_minutes
-          | "hours"   -> u_hours
-          | "days"    -> u_days
-          | "weeks"   -> u_weeks
+// Singular y plural valen igual. La gramática solo aceptaba plural, así que `timeout: 1 day`
+// —que es como lo escribe cualquiera, y como lo emite el composer— fallaba con un error de
+// sintaxis por una `s`. Aceptar las dos formas no puede romper ningún archivo que ya sea
+// válido: solo agrega formas que antes se rechazaban.
+?time_unit: ("seconds" | "second") -> u_seconds
+          | ("minutes" | "minute") -> u_minutes
+          | ("hours"   | "hour")   -> u_hours
+          | ("days"    | "day")    -> u_days
+          | ("weeks"   | "week")   -> u_weeks
 
 // --------------------------------------------------------------- view360
 view_block: "view360" STRING "{" view_item* "}"

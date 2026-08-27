@@ -1,16 +1,23 @@
 ---
 project: copp-ia
 type: project-overview
-provenance: copp-ia@main@6046648
-updated: 2026-07-09
+provenance: copp-ia@devyos@fad74e4
+updated: 2026-08-25
 tags: [arquitectura, vision, dsl, overview]
 ---
 
 # TeleFlow Platform — visión y arquitectura
 
-> Provenance: `copp-ia@main@6046648`. Fuentes: `docs/TeleFlow-Arquitectura-v1.0.md`,
+> Provenance: `copp-ia@devyos@fad74e4` (2026-08-25). Fuentes: `docs/TeleFlow-Arquitectura-v1.0.md`,
 > `docs/teleflow-{vision,adr,dsl-reference,deployment}.typ`, `README.md` y código en `teleflow/`.
 > Validado contra código → ver [[2026-07-09-validacion-doc-vs-codigo]].
+>
+> **Esta página describía la plataforma tal como estaba en el commit inicial** (`@main@6046648`,
+> 2026-07-09) y se quedó atrás de dos meses de trabajo: faltaba un servicio entero, dos tablas y
+> el traslado del colector de negocio. Se detectó al usarla como fuente para un informe, no al
+> leerla — que es la forma en que este repo ya documentó que envejece la doc
+> ([[fallas-silenciosas]], caso 17). Al tocar el código que esta página describe, **actualizarla
+> en el mismo commit.**
 
 ## Qué es (hecho)
 
@@ -40,17 +47,27 @@ sirven a todos; los templates se comparten vía Git (ADR-005, [[2026-06-30-adr-0
 | `executor-service` | 8002 | DAG engine async, durable sleep, **rule engine, entities/relations, view360**, adapters |
 | `registry-service` | 8003 | Versionado inmutable de flows; `latest` = pointer mutable |
 | `composer-service` | 8004 | Abstracción LLM; borradores `.tflow` desde lenguaje natural |
+| `metrics-service` | 8005 | **Agregado 2026-07-24.** Publica los gauges de estado actual del trabajo en curso. **Una sola réplica, por diseño** |
 | `review-ui` | 3100 | UI React de revisión PR-style |
 
 Infra: `postgres:5432`, `redis:6379`, `rabbitmq:5672`, `prometheus:9090`,
 `grafana` (host **3001** por defecto, no 3000 — ver validación).
 
-Los 5 servicios Python corren desde **una sola imagen** (`Dockerfile`), seleccionando el
+Los **6** servicios Python corren desde **una sola imagen** (`Dockerfile`), seleccionando el
 servicio con `uvicorn teleflow.<svc>.main:app`.
+
+`metrics-service` es el único que **no** se puede escalar: publica gauges de valor absoluto y
+el dashboard suma entre pods, así que dos réplicas hacen leer al doble todo número de negocio,
+sin que nada falle ni se loguee. Estuvo dentro del executor (3 réplicas) y por eso se leía 3×.
+La exclusión es **topológica a propósito** — se intentó coordinar por advisory lock y no
+alcanzó, porque dos ciclos que no se solapan en el tiempo no se excluyen entre sí. Ver
+[[2026-07-30-scanner-de-negocio-multi-replica]].
 
 ### Partición mental (hecho)
 - **Core Engine:** parser / registry / executor / gateway.
 - **Capa IA:** composer / review-ui.
+- **Observabilidad de negocio:** metrics-service (lee la misma base, no participa del camino
+  de ejecución).
 
 ## Cómo se relacionan (hecho)
 
@@ -96,12 +113,31 @@ Tablas clave: `flow_definitions` (inmutable, `UNIQUE(name,version)`), `flow_late
 inmutable, fuente de view360 y on_timer), `relation_state`, `flow_drafts`, `rule_timer_log`
 (`UNIQUE(rule_name, subject_key)` → evita doble disparo de on_timer).
 
-## Observabilidad (hecho — `copp-ia@devyos@1305d99`)
+**Agregadas después del inicial** (12 tablas en total, migraciones `0002`-`0006`):
 
-Prometheus scrapea `/metrics` de los 5 servicios cada 15 s (`teleflow/common/observability.py`
-instala el middleware, `/health` y `/ready` en cada app). Grafana provisiona dos dashboards
-desde el repo (`observability/grafana/dashboards/`): **TeleFlow · Overview** (técnico:
-requests, p95, error rate, throughput de steps) y **TeleFlow · Negocio** (trabajo pendiente).
+- `api_keys` (`0002`) — claves hasheadas SHA-256 con scopes e identidad para auditoría. La key
+  de entorno queda como **bootstrap**. Ver [[seguridad-api-keys]].
+- `audit_log` (`0004`) — append-only: quién desplegó qué versión y cuándo pasó a ser una
+  consulta y no un grep sobre logs rotados. Ver [[2026-07-25-auditoria-persistida]].
+- Columnas, no tablas: `flow_drafts.validation` (`0003`, el borrador se guarda con el resultado
+  de validarlo contra el parser), `process_instances.idempotency_key` (`0005`) y
+  `process_instances.driven_by` / `lease_expires_at` (`0006`, propiedad de la instancia en
+  vuelo cuando el executor corre con varias réplicas —
+  [[2026-07-30-propiedad-de-instancia-en-el-executor]]).
+
+## Observabilidad (hecho — `copp-ia@devyos@fad74e4`)
+
+Prometheus scrapea `/metrics` de los **6** servicios cada 15 s
+(`teleflow/common/observability.py` instala el middleware, `/health` y `/ready` en cada app).
+Grafana provisiona dos dashboards: **TeleFlow · Overview** (técnico: requests, p95, error rate,
+throughput de steps) y **TeleFlow · Negocio** (trabajo pendiente).
+
+**Los dashboards y las alertas viven dentro del chart** (`helm/teleflow/dashboards/`,
+`helm/teleflow/alerts/alerts.yml`) y **no** en `observability/`, aunque el compose también los
+use: Helm no puede leer archivos fuera del chart, así que si hubiera dos copias divergirían. El
+compose los toma de ahí (`observability/grafana.Dockerfile` copia
+`helm/teleflow/dashboards`, con el contexto de build en la raíz), y el chart los expone como
+ConfigMap y `PrometheusRule` opt-in. Una sola fuente, dos consumidores.
 
 Las métricas son de **dos clases y no se mezclan**:
 
@@ -111,9 +147,21 @@ Las métricas son de **dos clases y no se mezclan**:
   Miden lo que ya pasó, en el momento en que pasa.
 - **Gauges de estado actual** — `teleflow_instances_current{flow_name,status}`,
   `teleflow_human_task_backlog{flow_name,step_name}`,
-  `teleflow_human_task_oldest_seconds{...}`, `teleflow_domain_broken_flows`. Los primeros tres
-  los recalcula `BusinessMetricsCollector` (`executor_service/business_metrics.py`) agregando
-  `process_instances` cada `BUSINESS_METRICS_INTERVAL` (30 s), solo sobre estados vivos.
+  `teleflow_human_task_oldest_seconds{...}`, `teleflow_executor_backlog`,
+  `teleflow_domain_broken_flows`. Los recalcula `BusinessMetricsCollector`
+  (`executor_service/business_metrics.py`) agregando `process_instances` cada
+  `BUSINESS_METRICS_INTERVAL` (30 s), solo sobre estados vivos. **El módulo vive en
+  `executor_service/` por historia, pero el colector lo arranca `metrics_service`**
+  (`metrics_service/main.py:49`) — la ubicación del archivo no dice quién lo ejecuta.
+- **Frescura del colector** — `teleflow_business_metrics_last_success_timestamp_seconds` y
+  `teleflow_business_metrics_refresh_failures_total`. Existen porque los gauges de arriba
+  **conservan su último valor** si el refresh falla: con la base caída el pod queda vivo, `up`
+  vale 1 y un backlog congelado en 10 se lee igual que uno estable en 10. Ver
+  [[fallas-silenciosas]] #14.
+- **`teleflow_executor_backlog`** es aparte del resto: es la señal de **capacidad** del
+  executor —lo que compite por un worker— y **excluye durable sleep** a propósito, porque una
+  instancia dormida esperando a un humano no ocupa nada. Es la métrica que puede consumir un
+  autoescalador. Ver [[2026-08-18-senal-de-escalado-del-executor]].
 
 El **backlog de human_tasks** — cuántas instancias esperan señal en cada step y hace cuánto —
 es la métrica de negocio central y solo un gauge puede darla: un counter describe el pasado.
@@ -130,16 +178,29 @@ Python 3.11, FastAPI+uvicorn, SQLAlchemy 2 async+asyncpg, Alembic, Pydantic v2,
 networkx (DAG), httpx, aio-pika, redis.asyncio, structlog, mypy --strict (declarado),
 pytest-asyncio, React+Vite. Prometheus+Grafana.
 
-## Estado de implementación (hecho — `teleflow-deployment.typ:299-323` + validación)
+## Estado de implementación (al 2026-08-25 — `copp-ia@devyos@fad74e4`)
 
-- **Fases 1-3: COMPLETADO** (motor básico, dominio + long-running, IA + 360). Estructura
-  presente y cableada; **`pytest` → 26/26 passed** (verificado 2026-07-09).
-- **Fase 4: EN PROGRESO** (Helm, CLI, plugin VS Code Tree-sitter, SLA/runbooks).
-- `mypy --strict`: partía de 236 errores (validación inicial); **saneado a 0** el 2026-07-09
-  en el work-stream `saneamiento-mypy-strict` (pendiente de commit). Ver
-  [[2026-07-09-validacion-doc-vs-codigo]].
+- **Fases 1-3 del arquitecto: COMPLETADO** ya en el commit inicial (motor básico, dominio +
+  long-running, IA + 360). **`pytest` → 26/26** en la validación del 2026-07-09.
+- **Fase 4 del arquitecto:** Helm, CLI, runbooks y SLA **hechos**; queda el plugin VS Code
+  Tree-sitter, que está en Fase F del [[roadmap]] como opcional.
+- **Suite: 286 passed + 3 skipped** (los skips son los e2e de métricas, que necesitan un
+  Prometheus alcanzable), en 33 archivos entre unitarios y e2e contra el stack real.
+- **`mypy .` en 0**, sobre **80** archivos incluidos los tests, y es el gate de CI — no
+  `mypy teleflow`, que era menos estricto. Partía de 236 errores.
+- **Fases A-E del [[roadmap]] cerradas**, salvo la protección de rama de Fase B, que depende
+  de un tercero. Ver [[criterio-salida-fase-e]] y `docs/checklist-instalacion.md`.
 
 ## Decisiones de arquitectura
+
+Las cinco originales del arquitecto:
 [[2026-06-30-adr-001-lark-lalr]] · [[2026-06-30-adr-002-durable-sleep]] ·
 [[2026-06-30-adr-003-llm-configurable]] · [[2026-06-30-adr-004-rabbitmq-en-stack]] ·
 [[2026-06-30-adr-005-aislamiento-instancia]]
+
+Las tomadas después (14 más, en `Knowledge/decisions/`). Las que cambian cómo se opera la
+plataforma: [[2026-07-30-propiedad-de-instancia-en-el-executor]] ·
+[[2026-07-30-scanner-de-negocio-multi-replica]] · [[2026-07-30-capa-de-datos-del-chart]] ·
+[[2026-08-08-alcance-del-ha-de-la-capa-de-datos]] ·
+[[2026-08-18-senal-de-escalado-del-executor]] · [[2026-07-25-auditoria-persistida]] ·
+[[2026-07-25-estado-compartido-gateway]] · [[2026-07-14-clasificacion-errores-integracion]]

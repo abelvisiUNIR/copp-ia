@@ -23,9 +23,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from teleflow.common.config import get_settings
 from teleflow.common.db import db_ping, dispose_db, get_session, init_db
 from teleflow.common.logging import setup_logging
-from teleflow.common.models import InstanceTransition, ProcessInstance
+from teleflow.common.models import EntityState, InstanceTransition, ProcessInstance
 from teleflow.common.observability import setup_observability
 from teleflow.dsl.parser import get_parser
+from teleflow.dsl.serialize import to_jsonable
 from teleflow.executor_service.domain import DomainLoader
 from teleflow.executor_service.engine import ExecutionEngine
 from teleflow.executor_service.entities import DomainError, EntityService
@@ -209,10 +210,48 @@ async def create_entity(entity_type: str, req: CreateEntityRequest) -> dict[str,
     return await svc.create_entity(entity_type, req.fields, req.entity_id)
 
 
+@app.get("/domain")
+async def domain_summary() -> dict[str, Any]:
+    """El dominio **ya mergeado**: qué entidades y qué procesos existen, en una sola llamada.
+
+    Existe por un defecto concreto: una interfaz que quiera ofrecer "creá una entidad" o
+    "iniciá un proceso" necesita las definiciones, y sin esto tenía que pedir el AST de
+    **cada flow desplegado** para juntarlas. Son N+1 requests que crecen con cada deploy —
+    con once flows ya chocaba contra el rate limit del gateway. El executor tiene el dominio
+    mergeado en memoria; darlo entero cuesta una consulta cacheada.
+
+    Además el merge es la vista correcta: una entidad puede estar declarada en un flow y
+    referenciada desde otro, y quien la va a usar no debería tener que saber en cuál está.
+    """
+    loader: DomainLoader = state["domain"]
+    dominio = await loader.load()
+    merged = dominio.merged
+    return {
+        "entities": [to_jsonable(e) for e in merged.entities.values()],
+        "relations": [to_jsonable(r) for r in merged.relations.values()],
+        "processes": [to_jsonable(p) for p in merged.processes.values()],
+        # Un flow que no parsea no está en `merged`: si no se dijera acá, su ausencia se
+        # leería como "no existe" en vez de "está roto".
+        "broken_flows": dominio.broken_flows,
+    }
+
+
+@app.get("/entities/{entity_type}")
+async def list_entities(entity_type: str, estado: str | None = None,
+                        limit: int = 50) -> list[dict[str, Any]]:
+    svc: EntityService = state["entities"]
+    return [_entity_out(row) for row in await svc.list_entities(entity_type, estado, limit)]
+
+
 @app.get("/entities/{entity_type}/{entity_id}")
 async def get_entity(entity_type: str, entity_id: str) -> dict[str, Any]:
     svc: EntityService = state["entities"]
-    row = await svc.get_entity(entity_type, entity_id)
+    return _entity_out(await svc.get_entity(entity_type, entity_id))
+
+
+def _entity_out(row: EntityState) -> dict[str, Any]:
+    """Una sola forma para el listado y el detalle: si divergen, la interfaz muestra una
+    entidad distinta según por dónde llegó."""
     return {"entity_type": row.entity_type, "entity_id": row.entity_id,
             "estado": row.estado, "campos": row.campos,
             "updated_at": row.updated_at.isoformat()}

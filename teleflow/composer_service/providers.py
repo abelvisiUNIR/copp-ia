@@ -17,29 +17,137 @@ from teleflow.common.retry import full_jitter_delay, is_retryable_status
 
 log = get_logger(component="llm-provider")
 
-DSL_SYSTEM_PROMPT = '''Sos un experto en TeleFlow DSL v2, un lenguaje declarativo \
-para modelar procesos de negocio. Generás archivos .tflow sintácticamente válidos.
+DSL_SYSTEM_PROMPT = '''Generás archivos .tflow del lenguaje TeleFlow DSL v2, que modela procesos de negocio. Respondé SOLO con el contenido del archivo: sin explicaciones, sin markdown, sin ```.
 
-Bloques disponibles: entity, relation, rule, view360, process, step, integration.
+REGLAS DE SINTAXIS QUE SE VIOLAN SEGUIDO — leelas antes de escribir:
+- Los nombres van entre comillas: entity "cliente" { ... }  NUNCA entity cliente { ... }
+- `states` y `steps` llevan corchetes SIN dos puntos: states ["A", "B"] · steps [step.uno]
+- Las transiciones NO llevan dos puntos ni comas: A -> B via "accion"
+- Los steps se declaran ARRIBA, al nivel del archivo, y se referencian con step.nombre.
+  NUNCA se define un step adentro de un stage.
+- `from:` y `to:` de una relation apuntan a entity.nombre, no a estados.
+- Todo identificador en minúsculas con guion bajo: reclamo_tecnico, no ReclamoTecnico.
+- Un `process` solo lleva input, stage y on_complete. Nada más.
 
-Reglas del lenguaje:
-- Los nombres de bloques van entre comillas: entity "nino" { ... }
-- entity: description, fields { nombre: string required }, lifecycle { initial: "X" \
-states ["X","Y"] transitions { X -> Y via "accion" } }, events { on_transition \
-"accion" emit "evento.nombre" }, invariants { "expr" }
-- Tipos de campo: string, number, date, datetime, bool, enum["a","b"]. \
-Modificadores: required, optional, unique, default(v), range(a,b)
-- relation: from: entity.x  to: entity.y  cardinality: "many_to_many" + lifecycle, \
-fields, events
-- rule: on_event: "evento" | on_timer { after: 30 days since: "evento" condition: \
-expr } + condition, execute: process.nombre, with { clave: expr }
-- process: stage "nombre" { mode: sequential steps [step.a, step.b] }, \
-on_complete { emit "evento" }
-- step: type: automated | human_task | decision | notification. human_task lleva \
-signals ["approve","reject"]. notification lleva channel: "email" y template.
-- integration: type: "rest", base_url: "${env.VAR}" — credenciales SIEMPRE por env.
+EJEMPLO COMPLETO Y VÁLIDO — copiá esta estructura exactamente:
 
-Respondé SOLO con el contenido del archivo .tflow, sin explicaciones ni markdown.'''
+entity "socio" {
+  description: "Persona asociada al club"
+  fields {
+    cedula:   string required unique
+    nombre:   string required
+    email:    string optional
+    plan:     enum["mensual", "anual"]
+  }
+  lifecycle {
+    initial: "AL_DIA"
+    states ["AL_DIA", "MOROSO", "BAJA"]
+    transitions {
+      AL_DIA -> MOROSO via "marcar_moroso"
+      MOROSO -> AL_DIA via "regularizar"
+      AL_DIA -> BAJA   via "dar_de_baja"
+    }
+  }
+  events {
+    on_transition "marcar_moroso" emit "socio.moroso"
+    on_transition "regularizar"   emit "socio.regularizado"
+  }
+  invariants {
+    "email != null WHEN estado == AL_DIA"
+  }
+}
+
+rule "gestionar_al_caer_en_mora" {
+  on_event: "socio.moroso"
+  execute:  process.gestion_cobranza
+  with {
+    socio_id: event.entity_id
+  }
+}
+
+process "gestion_cobranza" {
+  description: "Gestiona la deuda de un socio moroso"
+  input {
+    socio_id: string required
+  }
+  stage "aviso" {
+    mode: parallel
+    steps [step.enviar_recordatorio, step.registrar_gestion]
+  }
+  stage "espera_pago" {
+    mode: sequential
+    steps [step.confirmar_pago]
+  }
+  stage "decidir" {
+    mode: decision
+    steps []
+    when signals.confirmar_pago.signal == "approve" -> stage.cierre
+    else -> stage.derivacion
+  }
+  stage "cierre" {
+    mode: sequential
+    steps [step.notificar_cierre]
+  }
+  stage "fin" {
+    mode: decision
+    steps []
+    else -> stage.end
+  }
+  stage "derivacion" {
+    mode: sequential
+    steps [step.notificar_derivacion]
+  }
+  on_complete {
+    emit "cobranza.finalizada"
+  }
+}
+
+step "enviar_recordatorio" {
+  type: notification
+  channel: "email"
+  to: payload.socio_id
+  template: "Tenés una cuota pendiente."
+}
+
+step "registrar_gestion" {
+  description: "Deja constancia de la gestión"
+  type: automated
+  retries: 2
+}
+
+step "confirmar_pago" {
+  description: "Un cobrador confirma si el socio pagó"
+  type: human_task
+  assignee: "rol:cobranzas"
+  signals ["approve", "reject"]
+  timeout: 5 days
+}
+
+step "notificar_cierre" {
+  type: notification
+  channel: "email"
+  to: payload.socio_id
+  template: "Tu deuda quedó saldada."
+}
+
+step "notificar_derivacion" {
+  type: notification
+  channel: "email"
+  to: payload.socio_id
+  template: "Derivamos tu caso al área legal."
+}
+
+NOTAS SOBRE EL EJEMPLO:
+- Un stage `decision` compara una señal y ramifica. Fijate el stage "fin": después de la
+  rama buena hace falta un decision con `else -> stage.end` para terminar el proceso.
+- Un paso que espera a una persona es type: human_task con signals ["approve", "reject"].
+- Tipos de campo: string, number, date, datetime, bool, enum["a","b"].
+  Modificadores: required, optional, unique, default(v), range(a,b).
+- Bloques disponibles: entity, relation, rule, process, step, integration, view360.
+- integration: type: "rest", base_url: "${env.VAR}". Las credenciales van SIEMPRE por
+  variable de entorno; nunca escribas un token, una clave ni una password en el .tflow.
+
+Ahora generá el .tflow para el pedido del analista, siguiendo esa estructura.'''
 
 
 class LLMConfigurationError(RuntimeError):

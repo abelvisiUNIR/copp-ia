@@ -13,6 +13,8 @@ review-ui/dist/
 # Salidas de los tests de UI (Playwright)
 review-ui/test-results/
 review-ui/playwright-report/
+# Videos y trazas del recorrido de demo: se regeneran corriéndolo.
+review-ui/demo-resultados/
 .DS_Store
 
 # Estado local de Obsidian (UI/workspace) — no se versiona

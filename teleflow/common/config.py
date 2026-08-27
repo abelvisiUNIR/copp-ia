@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     llm_retry_attempts: int = 3
     llm_retry_base_delay: float = 1.0
     llm_retry_max_delay: float = 20.0
+    # Cuánto espera el gateway a que el composer devuelva un borrador. Va aparte del timeout
+    # general (60 s) porque componer es la única ruta donde el tiempo lo pone un tercero: un
+    # modelo self-hosted en CPU tarda minutos, y cortarlo a los 60 s le devuelve al analista
+    # "servicio no disponible" sobre un servicio que está trabajando bien.
+    compose_timeout: float = 300.0
 
     # Executor
     worker_concurrency: int = 10

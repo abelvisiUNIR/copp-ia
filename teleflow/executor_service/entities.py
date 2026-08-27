@@ -155,6 +155,25 @@ class EntityService:
         return {"entity_type": entity_type, "entity_id": eid,
                 "estado": initial, "campos": campos}
 
+    async def list_entities(self, entity_type: str, estado: str | None = None,
+                            limit: int = 50) -> list[EntityState]:
+        """Las entidades de un tipo, más recientes primero.
+
+        Faltaba: se podía crear una entidad, buscarla por id y transicionarla, pero no
+        preguntar "¿qué niños hay?". Sin esto, cualquier interfaz obliga a saberse los ids de
+        memoria, que es justo lo que una interfaz viene a evitar.
+
+        El tope duro de 500 no es paginación de verdad —no hay cursor— pero evita que una
+        entidad con historia larga devuelva la tabla entera por descuido. Cuando haga falta
+        paginar en serio, se agrega el cursor acá.
+        """
+        async with self._sessionmaker() as session:
+            query = select(EntityState).where(EntityState.entity_type == entity_type)
+            if estado:
+                query = query.where(EntityState.estado == estado)
+            query = query.order_by(EntityState.updated_at.desc()).limit(min(limit, 500))
+            return list((await session.execute(query)).scalars().all())
+
     async def get_entity(self, entity_type: str, entity_id: str) -> EntityState:
         async with self._sessionmaker() as session:
             row = await session.scalar(

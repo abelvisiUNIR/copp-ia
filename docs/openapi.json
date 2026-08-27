@@ -823,6 +823,31 @@
         }
       }
     },
+    "/domain": {
+      "get": {
+        "tags": [
+          "entities"
+        ],
+        "summary": "Domain Summary",
+        "description": "Las definiciones del dominio ya mergeadas: qué entidades y procesos existen.\n\nLleva `entities:read` y no un scope propio: son las **definiciones** del dominio, la misma\nfamilia que consultar una entidad. Quien puede leer una ficha puede saber qué tipos hay.",
+        "operationId": "consultar_dominio",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
     "/relations/{rest}": {
       "patch": {
         "tags": [
