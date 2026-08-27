@@ -302,54 +302,6 @@ def test_una_firma_de_una_sola_senal_no_avisa(parser):
     assert _warnings(parser, fuente) == []
 
 
-# ------------------------------------------- que una rama no caiga dentro de otra
-
-def test_una_rama_que_cae_dentro_de_la_otra(parser):
-    """Un stage que no es decision cae en el siguiente, así que la rama buena corre y después
-    sigue de largo hacia los stages de la mala: se ejecutan las dos. Se cierra con un stage
-    decision de 'else -> stage.end', que es lo que hacen los ejemplos del repositorio."""
-    fuente = '''
-    process "gestion" {
-      input { a: string required }
-      stage "decidir" {
-        mode: decision
-        steps []
-        when a == "si" -> stage.ok
-        else -> stage.mal
-      }
-      stage "ok"  { mode: sequential steps [step.avisar_ok] }
-      stage "mal" { mode: sequential steps [step.avisar_mal] }
-    }
-    step "avisar_ok"  { type: notification channel: "email" template: "ok" }
-    step "avisar_mal" { type: notification channel: "email" template: "mal" }
-    '''
-    errores = _errors(parser, fuente)
-
-    assert len(errores) == 1
-    assert "'ok' cae dentro de la rama 'mal'" in errores[0].message
-    assert "else -> stage.end" in errores[0].message
-
-
-def test_cerrar_la_rama_con_un_decision_terminal_lo_resuelve(parser):
-    fuente = '''
-    process "gestion" {
-      input { a: string required }
-      stage "decidir" {
-        mode: decision
-        steps []
-        when a == "si" -> stage.ok
-        else -> stage.mal
-      }
-      stage "ok"  { mode: sequential steps [step.avisar_ok] }
-      stage "fin" { mode: decision steps [] else -> stage.end }
-      stage "mal" { mode: sequential steps [step.avisar_mal] }
-    }
-    step "avisar_ok"  { type: notification channel: "email" template: "ok" }
-    step "avisar_mal" { type: notification channel: "email" template: "mal" }
-    '''
-    assert _errors(parser, fuente) == []
-
-
 def test_los_ejemplos_del_repositorio_quedan_limpios(parser, ceibal_source, venta_source):
     """Los tres chequeos nuevos se agregan sobre flows que ya existen y están bien escritos.
     Si alguno los marca, el chequeo está mal, no el ejemplo."""

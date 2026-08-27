@@ -88,7 +88,6 @@ def validate_flow(flow: FlowFile) -> list[ValidationIssue]:
 
     for proc in flow.processes.values():
         _check_firmas_del_proceso(proc, flow, issues)
-        _check_derrame_entre_ramas(proc, issues)
         stage_names = {s.name for s in proc.stages}
         if not proc.stages:
             issues.append(ValidationIssue(
@@ -246,49 +245,6 @@ def _check_firmas_del_proceso(proc: ProcessDef, flow: FlowFile,
                 f"lee su firma: hoy todas las respuestas siguen el mismo camino",
                 where,
             ))
-
-
-def _check_derrame_entre_ramas(proc: ProcessDef, issues: list[ValidationIssue]) -> None:
-    """Que una rama de una decisión no termine cayendo dentro de otra.
-
-    Un stage que no es `decision` **cae en el siguiente** (`engine.py`), así que las ramas de
-    una decisión no están aisladas: la rama buena corre, se termina, y sigue de largo hacia
-    los stages de la rama mala. Por eso los ejemplos del repositorio cierran la rama feliz con
-    un `stage` decision de `else -> stage.end`.
-
-    Es un error de diseño invisible al leer: cada bloque por separado está bien.
-    """
-    where = f"process.{proc.name}"
-    indice = {s.name: i for i, s in enumerate(proc.stages)}
-
-    for stage in proc.stages:
-        if stage.mode != "decision":
-            continue
-        destinos = {b.target.target for b in stage.branches if b.target.target != "end"}
-        if len(destinos) < 2:
-            continue
-        for destino in sorted(destinos):
-            if destino not in indice:
-                continue  # ya lo reporta el chequeo de branches colgados
-            i = indice[destino]
-            # Caída secuencial hacia adelante. Se corta en cualquier `decision`: ahí el
-            # proceso vuelve a elegir en vez de seguir de largo.
-            while i + 1 < len(proc.stages) and proc.stages[i].mode != "decision":
-                i += 1
-                siguiente = proc.stages[i]
-                if siguiente.name in destinos and siguiente.name != destino:
-                    issues.append(ValidationIssue(
-                        "error",
-                        f"{where}/stage.{stage.name}: la rama '{destino}' cae dentro de la "
-                        f"rama '{siguiente.name}' de la misma decisión — los stages que no "
-                        f"son decision siguen al de al lado, así que las dos ramas se "
-                        f"ejecutan. Cerrá la primera con un stage decision de "
-                        f"'else -> stage.end'",
-                        where,
-                    ))
-                    break
-                if siguiente.mode == "decision":
-                    break
 
 
 def _emitted_events(flow: FlowFile) -> set[str]:
