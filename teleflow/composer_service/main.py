@@ -217,6 +217,65 @@ async def reject_draft(draft_id: uuid.UUID, req: RejectRequest,
     return _draft_out(draft)
 
 
+class EditRequest(BaseModel):
+    source: str
+    actor_id: str = ""
+    comment: str = ""
+
+
+@app.patch("/drafts/{draft_id}/source")
+async def edit_draft_source(draft_id: uuid.UUID, req: EditRequest,
+                            session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    """Reemplaza la fuente de un borrador y la revalida.
+
+    Existe porque el revisor veía el error con línea y columna y no tenía dónde corregirlo:
+    tenía que salir a una terminal a cambiar una línea. La corrección tiene que ocurrir donde
+    está el contexto — el pedido original del analista, el diff, el veredicto del parser.
+
+    Tres cosas que este endpoint garantiza y por eso no alcanza con que la interfaz escriba
+    la columna:
+
+    1. **Revalida del lado del servidor**, contra el mismo parser que va a interpretar el flow
+       en producción. Un validador en el navegador sería una segunda implementación de la
+       gramática, condenada a divergir de `teleflow/dsl/teleflow.lark`.
+    2. **Guarda lo que escribió el modelo** la primera vez que alguien edita, para que la
+       revisión pueda mostrar qué propuso la máquina y qué cambió una persona. Si ya está
+       guardado no se pisa: la segunda corrección sigue siendo humana.
+    3. **Deja la edición en el historial** del borrador, con actor y comentario, igual que
+       aprobar y rechazar.
+
+    Solo sobre borradores `pending`: uno aprobado ya se desplegó como versión inmutable, y
+    editarlo haría que el registro y el borrador contaran historias distintas del mismo flow.
+    """
+    draft = await session.get(FlowDraft, draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="Borrador no encontrado")
+    if draft.status != "pending":
+        raise HTTPException(status_code=409, detail=f"Borrador ya {draft.status}")
+
+    fuente = req.source.strip()
+    if not fuente:
+        raise HTTPException(status_code=422, detail="La fuente no puede estar vacía")
+
+    if fuente == draft.source:
+        # No es un error, pero tampoco una edición: guardar dejaría en el historial una
+        # corrección que no cambió nada, y marcaría como "editado" un borrador intacto.
+        return _draft_out(draft)
+
+    if draft.source_generado is None:
+        draft.source_generado = draft.source
+
+    draft.source = fuente
+    draft.validation = await _validate_source(fuente, draft.name)
+    draft.comments = list(draft.comments) + [{
+        "actor": req.actor_id, "action": "edit", "comment": req.comment,
+    }]
+    await session.commit()
+    log.info("draft_edited", draft_id=str(draft_id), flow_name=draft.name,
+             actor_id=req.actor_id, parses=draft.validation["parses"])
+    return _draft_out(draft)
+
+
 def _draft_out(draft: FlowDraft, include_source: bool = True) -> dict[str, Any]:
     out: dict[str, Any] = {
         "draft_id": str(draft.id),
@@ -229,8 +288,14 @@ def _draft_out(draft: FlowDraft, include_source: bool = True) -> dict[str, Any]:
         # si vale la pena abrir un borrador.
         "provider": draft.provider,
         "validation": draft.validation,
+        # Si fue corregido a mano. Va en el listado porque cambia qué es el borrador: uno
+        # editado ya pasó por una persona, y el revisor siguiente quiere saberlo antes de
+        # abrirlo.
+        "editado": draft.source_generado is not None,
     }
     if include_source:
         out["source"] = draft.source
         out["base_source"] = draft.base_source
+        # Lo que escribió el modelo, para diffear contra `source`. Null = nadie lo editó.
+        out["source_generado"] = draft.source_generado
     return out

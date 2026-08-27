@@ -5,6 +5,7 @@ Antes, `LLM_PROVIDER=anthropic` sin credencial devolvía el `StubProvider` con u
 había generado el modelo, y el log registraba el proveedor *pedido*. Estos tests fijan que
 el stub solo aparece cuando se lo pide explícitamente.
 """
+import uuid
 from pathlib import Path
 from typing import Any, cast
 
@@ -421,3 +422,151 @@ def test_env_example_arranca_sin_credenciales():
             f".env.example trae LLM_PROVIDER={provider!r} sin LLM_API_KEY: "
             f"composer-service no arrancaría en un clon nuevo."
         )
+
+
+# ------------------------------------------- corregir el borrador a mano
+#
+# El revisor veía el error con línea y columna y no tenía dónde corregirlo: tenía que salir a
+# una terminal a cambiar una línea. Estos tests fijan las tres garantías del endpoint, que son
+# la razón por la que no alcanza con que la interfaz escriba la columna.
+
+
+class _SesionConBorrador:
+    """Lo mínimo que usa `edit_draft_source`: recuperar por id y confirmar."""
+
+    def __init__(self, draft):
+        self.draft = draft
+        self.commits = 0
+
+    async def get(self, _modelo, _pk):
+        return self.draft
+
+    async def commit(self):
+        self.commits += 1
+
+
+def _borrador(source="process \"x\" {}", status="pending", source_generado=None):
+    from teleflow.common.models import FlowDraft
+
+    return FlowDraft(id=uuid.uuid4(), name="licencias", description="pedido original",
+                     source=source, status=status, comments=[],
+                     provider="ollama", validation={"parses": False, "issues": []},
+                     source_generado=source_generado)
+
+
+async def _editar(session, monkeypatch, source, **kwargs):
+    from teleflow.composer_service.main import EditRequest, edit_draft_source
+
+    return await edit_draft_source(
+        session.draft.id,
+        EditRequest(source=source, **kwargs),
+        session=cast(AsyncSession, session),
+    )
+
+
+async def test_editar_revalida_contra_el_parser(monkeypatch):
+    """La corrección no se cree a sí misma: el veredicto lo vuelve a dar el parser.
+
+    Es lo que impide que el badge quede afirmando algo viejo sobre código nuevo — el modo de
+    falla más peligroso de toda la pantalla.
+    """
+    session = _SesionConBorrador(_borrador())
+    _parser_responde(monkeypatch, {"valid": True, "issues": []})
+
+    salida = await _editar(session, monkeypatch, "process \"y\" { }")
+
+    assert session.draft.source == "process \"y\" { }"
+    assert session.draft.validation["parses"] is True
+    assert salida["validation"]["parses"] is True
+    assert session.commits == 1
+
+
+async def test_editar_guarda_lo_que_habia_escrito_el_modelo(monkeypatch):
+    session = _SesionConBorrador(_borrador(source="lo que generó el modelo"))
+    _parser_responde(monkeypatch, {"valid": True, "issues": []})
+
+    salida = await _editar(session, monkeypatch, "lo que corrigió la persona")
+
+    assert session.draft.source_generado == "lo que generó el modelo"
+    assert session.draft.source == "lo que corrigió la persona"
+    assert salida["editado"] is True
+
+
+async def test_la_segunda_edicion_no_pisa_el_original(monkeypatch):
+    """Sin esto, corregir dos veces borraría al modelo del historial: la primera corrección
+    humana pasaría a figurar como lo que escribió la máquina."""
+    session = _SesionConBorrador(
+        _borrador(source="primera corrección", source_generado="original del modelo"))
+    _parser_responde(monkeypatch, {"valid": True, "issues": []})
+
+    await _editar(session, monkeypatch, "segunda corrección")
+
+    assert session.draft.source_generado == "original del modelo"
+
+
+async def test_editar_deja_rastro_con_actor(monkeypatch):
+    session = _SesionConBorrador(_borrador())
+    _parser_responde(monkeypatch, {"valid": True, "issues": []})
+
+    await _editar(session, monkeypatch, "otra cosa",
+                  actor_id="yosdey", comment="type: wait no existe")
+
+    ultimo = session.draft.comments[-1]
+    assert ultimo == {"actor": "yosdey", "action": "edit",
+                      "comment": "type: wait no existe"}
+
+
+async def test_editar_un_borrador_ya_aprobado_es_conflicto(monkeypatch):
+    """Un borrador aprobado ya se desplegó como versión inmutable. Editarlo haría que el
+    registro y el borrador contaran historias distintas del mismo flow."""
+    from fastapi import HTTPException
+
+    session = _SesionConBorrador(_borrador(status="approved"))
+    _parser_responde(monkeypatch, {"valid": True, "issues": []})
+
+    with pytest.raises(HTTPException) as exc:
+        await _editar(session, monkeypatch, "algo nuevo")
+
+    assert exc.value.status_code == 409
+    assert session.commits == 0
+
+
+async def test_editar_con_la_misma_fuente_no_marca_el_borrador(monkeypatch):
+    """Guardar una edición que no cambió nada dejaría en el historial una corrección falsa y
+    marcaría como editado un borrador intacto."""
+    session = _SesionConBorrador(_borrador(source="  process \"x\" {}  ".strip()))
+    _parser_responde(monkeypatch, {"valid": True, "issues": []})
+
+    salida = await _editar(session, monkeypatch, "  process \"x\" {}  ")
+
+    assert session.draft.source_generado is None
+    assert session.draft.comments == []
+    assert salida["editado"] is False
+    assert session.commits == 0
+
+
+async def test_editar_con_fuente_vacia_es_422(monkeypatch):
+    from fastapi import HTTPException
+
+    session = _SesionConBorrador(_borrador())
+
+    with pytest.raises(HTTPException) as exc:
+        await _editar(session, monkeypatch, "   ")
+
+    assert exc.value.status_code == 422
+    assert session.commits == 0
+
+
+async def test_editar_algo_que_no_compila_guarda_igual_y_lo_dice(monkeypatch):
+    """La corrección se guarda aunque siga rota: arreglar un error suele destapar el
+    siguiente, y perder lo avanzado en cada intento haría inusable el ciclo."""
+    session = _SesionConBorrador(_borrador())
+    _parser_responde(monkeypatch, {"valid": False, "issues": [
+        {"level": "error", "message": "estado no declarado 'EN_LICENCIA'", "block": "entity"},
+    ]})
+
+    salida = await _editar(session, monkeypatch, "process \"y\" { }")
+
+    assert session.draft.source == "process \"y\" { }"
+    assert salida["validation"]["parses"] is False
+    assert "EN_LICENCIA" in salida["validation"]["issues"][0]["message"]

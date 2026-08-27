@@ -798,3 +798,19 @@ async def drafts(request: Request) -> Response:
                    {"GET": auth.COMPOSE_READ, "POST": auth.COMPOSE_WRITE}))])
 async def draft_ops(request: Request, rest: str) -> Response:
     return await _proxy(request, get_settings().composer_url, f"/drafts/{rest}")
+
+
+@app.patch("/drafts/{draft_id}/source", tags=["composer"], operation_id="editar_draft",
+           dependencies=[Depends(auth.require(auth.FLOWS_DEPLOY))])
+async def edit_draft(request: Request, draft_id: str) -> Response:
+    """Corrige a mano la fuente de un borrador y la revalida.
+
+    Lleva `flows:deploy` y **no** `compose:write`, que es el scope del resto de las rutas de
+    borradores. El corte no es "qué recurso toca" sino "qué habilita": aprobar despliega
+    `draft.source`, así que quien puede reescribir esa columna decide qué código se va a
+    ejecutar. Es la misma responsabilidad que desplegar, y por eso el mismo permiso.
+
+    Consecuencia buscada: una clave de analista puede pedir borradores y leerlos, y no puede
+    reescribir lo que se despliega.
+    """
+    return await _proxy(request, get_settings().composer_url, f"/drafts/{draft_id}/source")

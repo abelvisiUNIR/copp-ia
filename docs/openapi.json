@@ -1114,6 +1114,52 @@
           }
         }
       }
+    },
+    "/drafts/{draft_id}/source": {
+      "patch": {
+        "tags": [
+          "composer"
+        ],
+        "summary": "Edit Draft",
+        "description": "Corrige a mano la fuente de un borrador y la revalida.\n\nLleva `flows:deploy` y **no** `compose:write`, que es el scope del resto de las rutas de\nborradores. El corte no es \"qué recurso toca\" sino \"qué habilita\": aprobar despliega\n`draft.source`, así que quien puede reescribir esa columna decide qué código se va a\nejecutar. Es la misma responsabilidad que desplegar, y por eso el mismo permiso.\n\nConsecuencia buscada: una clave de analista puede pedir borradores y leerlos, y no puede\nreescribir lo que se despliega.",
+        "operationId": "editar_draft",
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
