@@ -33,5 +33,17 @@ server {
         proxy_pass $upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
+
+        # Cada techo de la cadena tiene que ser **estrictamente mayor** que el del salto que
+        # envuelve, o el de afuera corta primero y tapa el error real con un 504 vacío.
+        #
+        #   nginx (acá, 720 s) > gateway (`compose_timeout`, 660 s) > composer→LLM (600 s)
+        #
+        # Sin esto rige el default de nginx —60 s— y componer un flow desde la interfaz es
+        # imposible con cualquier proveedor que tarde más que eso: un modelo self-hosted en CPU
+        # tarda minutos. El techo del gateway no alcanzaba, porque nginx cortaba un salto antes.
+        proxy_connect_timeout 10s;
+        proxy_send_timeout   720s;
+        proxy_read_timeout   720s;
     }
 }

@@ -570,3 +570,79 @@ async def test_editar_algo_que_no_compila_guarda_igual_y_lo_dice(monkeypatch):
     assert session.draft.source == "process \"y\" { }"
     assert salida["validation"]["parses"] is False
     assert "EN_LICENCIA" in salida["validation"]["issues"][0]["message"]
+
+
+# ------------------------------------------- el timeout de lectura no se reintenta
+#
+# Un timeout de lectura significa que el proveedor recibió el pedido y estuvo generando todo
+# ese tiempo. Reintentar arranca de cero, vuelve a esperar el timeout completo, y garantiza
+# pasarse también del techo de quien nos llama: el analista espera el doble para recibir el
+# mismo error. Pasó de verdad el 2026-08-27 con el modelo local.
+
+
+class _ClienteQueSeQuedaColgado:
+    """Cliente que siempre corta por timeout de lectura, contando los intentos."""
+
+    intentos = 0
+
+    def __init__(self, *a, **kw):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def post(self, *a, **kw):
+        import httpx
+
+        type(self).intentos += 1
+        raise httpx.ReadTimeout("")
+
+
+async def test_un_timeout_de_lectura_falla_en_el_primer_intento(monkeypatch):
+    import httpx
+
+    from teleflow.composer_service.providers import LLMTransientError, _post_json
+
+    _ClienteQueSeQuedaColgado.intentos = 0
+    monkeypatch.setattr(httpx, "AsyncClient", _ClienteQueSeQuedaColgado)
+
+    with pytest.raises(LLMTransientError) as exc:
+        await _post_json("http://x/y", headers={}, payload={}, timeout=600,
+                         settings=Settings(llm_provider="stub"))
+
+    assert _ClienteQueSeQuedaColgado.intentos == 1, "no se reintenta un timeout de lectura"
+    # `str(ReadTimeout)` viene vacío: sin un mensaje propio, el analista leía "error de red: ".
+    assert "600" in str(exc.value)
+    assert "self-hosted" in str(exc.value)
+
+
+def test_la_cadena_de_timeouts_es_estrictamente_creciente():
+    """Cada techo tiene que ser mayor que el del salto que envuelve. Si empatan, el de afuera
+    corta primero y tapa el error real con uno genérico — y los reintentos que la config
+    promete no tienen dónde ocurrir."""
+    import re
+
+    from teleflow.common.config import Settings
+
+    proveedor = re.search(
+        r"^\s*timeout=(\d+),",
+        (ROOT / "teleflow" / "composer_service" / "providers.py").read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert proveedor, "no se encontró el timeout del provider contra el LLM"
+    llm = int(proveedor.group(1))
+    gateway = Settings().compose_timeout
+
+    proxy = re.search(
+        r"proxy_read_timeout\s+(\d+)s",
+        (ROOT / "review-ui" / "nginx.conf.template").read_text(encoding="utf-8"),
+    )
+    assert proxy, "no se encontró proxy_read_timeout en la plantilla de nginx"
+
+    assert llm < gateway < int(proxy.group(1)), (
+        f"la cadena tiene que crecer hacia afuera: LLM={llm} < gateway={gateway} "
+        f"< proxy={proxy.group(1)}"
+    )

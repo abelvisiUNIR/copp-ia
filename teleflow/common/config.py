@@ -50,7 +50,12 @@ class Settings(BaseSettings):
     # general (60 s) porque componer es la única ruta donde el tiempo lo pone un tercero: un
     # modelo self-hosted en CPU tarda minutos, y cortarlo a los 60 s le devuelve al analista
     # "servicio no disponible" sobre un servicio que está trabajando bien.
-    compose_timeout: float = 300.0
+    #
+    # Tiene que ser **mayor** que el timeout del composer contra el proveedor (600 s en
+    # `composer_service/providers.py`), no igual: si empatan, el gateway corta en el mismo
+    # instante y el analista recibe un 502 genérico en vez del error real del proveedor. El
+    # proxy de la interfaz cierra la cadena con 720 s.
+    compose_timeout: float = 660.0
 
     # Executor
     worker_concurrency: int = 10
