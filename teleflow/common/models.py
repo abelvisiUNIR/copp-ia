@@ -181,6 +181,15 @@ class FlowDraft(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     source: Mapped[str] = mapped_column(Text)
     base_source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Lo que devolvió el modelo, antes de que una persona lo tocara. `source` es siempre la
+    # versión vigente —la que se despliega al aprobar—, así que sin esta columna la primera
+    # corrección borraría para siempre qué había escrito la máquina.
+    #
+    # Se llena en la **primera** edición copiando el `source` de ese momento, no al componer:
+    # así un borrador que nadie editó lo deja en null y se distingue de uno editado, sin
+    # duplicar el texto de los que nunca se corrigen.
+    # Nullable también por los borradores anteriores a la columna.
+    source_generado: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
     comments: Mapped[list[Any]] = mapped_column(JSONType, default=list)
     # Proveedor que **generó** este borrador (no el configurado al leerlo): un borrador del

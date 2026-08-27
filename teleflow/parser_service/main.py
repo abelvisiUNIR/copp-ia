@@ -28,6 +28,17 @@ class IssueOut(BaseModel):
     level: str
     message: str
     block: str = ""
+    # Dónde está el error, como **dato** y no solo embebido en el texto del mensaje.
+    #
+    # `TeleFlowSyntaxError` ya los traía; se aplastaban a string acá, en la frontera del
+    # servicio, y del otro lado nadie podía llevar al revisor hasta la línea sin volver a
+    # parsear la frase en castellano. Decir "línea 43, columna 62" y no poder ir ahí es la
+    # peor forma de tener la información.
+    #
+    # Solo los errores de sintaxis los tienen: los del validador hablan de un bloque entero
+    # (`process.x/stage.y`), no de una posición en el archivo.
+    line: int | None = None
+    column: int | None = None
 
 
 class ParseResponse(BaseModel):
@@ -49,7 +60,8 @@ async def parse(req: ParseRequest) -> ParseResponse:
         return ParseResponse(
             valid=False,
             checksum=csum,
-            issues=[IssueOut(level="error", message=exc.message, block="syntax")],
+            issues=[IssueOut(level="error", message=exc.message, block="syntax",
+                             line=exc.line, column=exc.column)],
         )
 
     issues = validate_flow(flow)

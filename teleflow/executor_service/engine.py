@@ -57,15 +57,81 @@ class StepFailed(Exception):
         self.step_name = step_name
 
 
+def ramas_por_decision(proc: ProcessDef) -> dict[str, set[str]]:
+    """Para cada stage `decision`, los stages a los que puede saltar.
+
+    Es la base de la regla que impide que **las ramas de una misma decisión se derramen una
+    en otra**: un stage que no es decision cae en el de al lado, y las ramas están escritas
+    una debajo de la otra, así que sin esto la rama buena corría y después seguía de largo
+    hacia la mala. Ver el ADR de la caída secuencial.
+    """
+    return {
+        s.name: {b.target.target for b in s.branches if b.target.target != "end"}
+        for s in proc.stages if s.mode == "decision"
+    }
+
+
+def siguiente_stage(proc: ProcessDef, ramas: dict[str, set[str]],
+                    actual: int, rama: str | None) -> int:
+    """A qué stage se cae al terminar `actual`. Devolver `len(stages)` = el proceso termina.
+
+    `rama` es la decisión de la que venimos, o None si llegamos por caída. La regla: **una
+    rama no se derrama sobre otra rama de su misma decisión**. Las ramas se escriben una
+    debajo de la otra y los stages que no son decision caen en el de al lado, así que sin esto
+    elegir la rama buena la ejecutaba y después seguía de largo hacia la mala.
+
+    Es acotada a propósito: solo corta el paso hacia una **hermana**. Un stage común sigue
+    cayendo en el siguiente, que es lo que hace legible un proceso lineal, y una rama de varios
+    stages sigue encadenada hasta toparse con su hermana.
+    """
+    siguiente = actual + 1
+    if rama is not None and siguiente < len(proc.stages) \
+            and proc.stages[siguiente].name in ramas.get(rama, set()):
+        return len(proc.stages)
+    return siguiente
+
+
+def decision_de_cada_stage(proc: ProcessDef) -> dict[int, str]:
+    """Para cada stage, de qué decisión es rama (directa o por caída desde una rama).
+
+    Recorre hacia adelante desde cada destino: se entra a la rama y se sigue cayendo hasta
+    toparse con otra rama de esa misma decisión —ahí termina— o con una decisión, que vuelve
+    a elegir. Es la versión estática de lo que el intérprete resuelve con el cursor.
+    """
+    dueño: dict[int, str] = {}
+    indice = {s.name: i for i, s in enumerate(proc.stages)}
+    for decision, destinos in ramas_por_decision(proc).items():
+        for destino in destinos:
+            if destino not in indice:
+                continue
+            i = indice[destino]
+            while i < len(proc.stages):
+                dueño.setdefault(i, decision)
+                if proc.stages[i].mode == "decision":
+                    break
+                if i + 1 < len(proc.stages) and proc.stages[i + 1].name in destinos:
+                    break  # la rama termina antes de pisar a su hermana
+                i += 1
+    return dueño
+
+
 def build_stage_dag(proc: ProcessDef) -> nx.DiGraph:
     graph: nx.DiGraph = nx.DiGraph()
     names = [s.name for s in proc.stages]
     graph.add_nodes_from(names)
+    ramas = ramas_por_decision(proc)
+    dueño = decision_de_cada_stage(proc)
     for i, stage in enumerate(proc.stages):
         if stage.mode == "decision":
             for branch in stage.branches:
                 graph.add_edge(stage.name, branch.target.target)
         elif i + 1 < len(names):
+            # La caída secuencial **no** cruza hacia otra rama de la misma decisión: ahí el
+            # proceso termina. El grafo tiene que decir lo mismo que el intérprete, o la
+            # detección de ciclos opina sobre un proceso que no existe.
+            decision = dueño.get(i)
+            if decision is not None and names[i + 1] in ramas.get(decision, set()):
+                continue
             graph.add_edge(stage.name, names[i + 1])
     return graph
 
@@ -433,7 +499,14 @@ class ExecutionEngine:
             await self._set_status(instance_id, snapshot["status"], "IN_PROGRESS")
 
         stage_index = {s.name: i for i, s in enumerate(proc.stages)}
+        ramas = ramas_por_decision(proc)
         visited_decisions = 0
+
+        def avanzar() -> None:
+            """Cae al stage siguiente. `_cursor["rama"]` recuerda de qué decisión venimos, que
+            es lo que `siguiente_stage()` necesita para no derramar una rama sobre otra."""
+            cursor["stage"] = siguiente_stage(
+                proc, ramas, cursor["stage"], cursor.get("rama"))
 
         while cursor["stage"] < len(proc.stages):
             stage: StageDef = proc.stages[cursor["stage"]]
@@ -450,7 +523,7 @@ class ExecutionEngine:
                     ctx["steps"][step_def.name] = result
                     await self._record_step(instance_id, step_def.name, result)
                 cursor["step"] = 0
-                cursor["stage"] += 1
+                avanzar()
                 await self._save_progress(instance_id, ctx, None)
                 continue
 
@@ -482,13 +555,17 @@ class ExecutionEngine:
                     raise StepFailed(stage.name, "loop infinito en stages decision")
                 target = self._next_branch(stage, ctx)
                 if target is None:
-                    cursor["stage"] += 1
+                    # Ninguna rama aplicó: cae como cualquier stage, y deja de estar dentro
+                    # de la rama anterior.
+                    cursor.pop("rama", None)
+                    avanzar()
                 elif target == "end":  # branch terminal: -> stage.end
                     cursor["stage"] = len(proc.stages)
                 else:
                     cursor["stage"] = stage_index[target]
+                    cursor["rama"] = stage.name
             else:
-                cursor["stage"] += 1
+                avanzar()
             cursor["step"] = 0
             await self._save_progress(instance_id, ctx, None)
 

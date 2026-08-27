@@ -27,6 +27,9 @@ REGLAS DE SINTAXIS QUE SE VIOLAN SEGUIDO — leelas antes de escribir:
   NUNCA se define un step adentro de un stage.
 - `from:` y `to:` de una relation apuntan a entity.nombre, no a estados.
 - Todo identificador en minúsculas con guion bajo: reclamo_tecnico, no ReclamoTecnico.
+- Los identificadores NO llevan tildes ni ñ: `notificacion`, nunca `notificación`. El texto
+  entre comillas sí las lleva y debe llevarlas: template: "Tu licencia fue aprobada."
+  Vale para nombres de bloque, de campo, de estado, de evento y de paso.
 - Un `process` solo lleva input, stage y on_complete. Nada más.
 
 EJEMPLO COMPLETO Y VÁLIDO — copiá esta estructura exactamente:
@@ -88,11 +91,6 @@ process "gestion_cobranza" {
     mode: sequential
     steps [step.notificar_cierre]
   }
-  stage "fin" {
-    mode: decision
-    steps []
-    else -> stage.end
-  }
   stage "derivacion" {
     mode: sequential
     steps [step.notificar_derivacion]
@@ -138,8 +136,8 @@ step "notificar_derivacion" {
 }
 
 NOTAS SOBRE EL EJEMPLO:
-- Un stage `decision` compara una señal y ramifica. Fijate el stage "fin": después de la
-  rama buena hace falta un decision con `else -> stage.end` para terminar el proceso.
+- Un stage `decision` compara una señal y ramifica. Cada rama termina sola: al llegar al
+  stage de la rama de al lado, el proceso completa. No hace falta cerrar nada.
 - Un paso que espera a una persona es type: human_task con signals ["approve", "reject"].
 - Tipos de campo: string, number, date, datetime, bool, enum["a","b"].
   Modificadores: required, optional, unique, default(v), range(a,b).
@@ -207,7 +205,21 @@ async def _post_json(url: str, *, headers: dict[str, str], payload: dict[str, An
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(url, headers=headers, json=payload)
-        except httpx.HTTPError as exc:  # timeout, DNS, conexión rechazada, TLS
+        except httpx.ReadTimeout as exc:
+            # Un timeout de **lectura** no es un fallo transitorio: el proveedor recibió el
+            # pedido y estuvo generando todo ese tiempo. Reintentar arranca la generación de
+            # cero y vuelve a esperar el timeout completo, así que solo garantiza pasarse
+            # también del techo de quien nos llama — y el analista termina esperando el doble
+            # para recibir el mismo error. Falla en el primer intento y lo dice.
+            #
+            # `str(ReadTimeout)` suele ser vacío, así que el mensaje lo ponemos nosotros: "error
+            # de red: " a secas no le sirve a nadie para saber qué pasó.
+            raise LLMTransientError(
+                f"el proveedor no respondió en {timeout:.0f} s. Si es un modelo self-hosted en "
+                f"CPU puede estar simplemente tardando más que eso; probá con un pedido más "
+                f"corto o subí el timeout."
+            ) from exc
+        except httpx.HTTPError as exc:  # DNS, conexión rechazada, TLS, timeout de conexión
             ultimo = f"error de red: {exc}"
         else:
             if response.status_code < 400:
@@ -345,7 +357,13 @@ class OllamaProvider(LLMProvider):
                     {"role": "user", "content": prompt},
                 ],
             },
-            timeout=300,
+            # 10 minutos. Un modelo self-hosted en CPU no tiene un tiempo de respuesta
+            # acotado: depende del tamaño del prompt y de qué más esté corriendo en la
+            # máquina. Con 300 s se midieron generaciones de 238 s y 272 s —dentro, pero
+            # raspando— y una que se pasó y devolvió un 502 sobre un servicio que estaba
+            # trabajando bien. El costo de esperar de más es que alguien espera; el de cortar
+            # de menos es tirar a la basura minutos de cómputo ya gastados.
+            timeout=600,
             settings=self._settings,
         )
         motivo = str(data.get("done_reason") or "")

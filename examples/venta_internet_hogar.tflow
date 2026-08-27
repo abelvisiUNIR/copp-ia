@@ -36,12 +36,6 @@ process "venta_internet_hogar" {
     steps [step.activar_servicio, step.notificar_alta]
   }
 
-  stage "fin_ok" {
-    mode: decision
-    steps []
-    else -> stage.end
-  }
-
   stage "rechazo" {
     mode: sequential
     steps [step.notificar_rechazo]

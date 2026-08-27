@@ -11,14 +11,22 @@ error), pero silenciarlo dejaba pasar la rule colgada sin un solo aviso.
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from teleflow.dsl.ast_nodes import (
+    BoolOp,
+    Cmp,
     EntityDef,
     FlowFile,
+    Func,
     Lifecycle,
+    Not,
+    ProcessDef,
+    Ref,
     RelationDef,
     RuleDef,
+    When,
 )
 
 
@@ -79,6 +87,7 @@ def validate_flow(flow: FlowFile) -> list[ValidationIssue]:
                 ))
 
     for proc in flow.processes.values():
+        _check_firmas_del_proceso(proc, flow, issues)
         stage_names = {s.name for s in proc.stages}
         if not proc.stages:
             issues.append(ValidationIssue(
@@ -160,6 +169,82 @@ def validate_flow(flow: FlowFile) -> list[ValidationIssue]:
                 ))
 
     return issues
+
+
+def _refs_de(expr: object) -> Iterator[Ref]:
+    """Todas las referencias con puntos que aparecen en una expresión, a cualquier
+    profundidad. Sin esto habría que mirar solo el nivel de arriba y una condición como
+    `a == b AND signals.x.signal == "ok"` escondería su señal."""
+    if isinstance(expr, Ref):
+        yield expr
+    elif isinstance(expr, Cmp):
+        yield from _refs_de(expr.left)
+        yield from _refs_de(expr.right)
+    elif isinstance(expr, BoolOp):
+        for operando in expr.operands:
+            yield from _refs_de(operando)
+    elif isinstance(expr, Not):
+        yield from _refs_de(expr.operand)
+    elif isinstance(expr, When):
+        yield from _refs_de(expr.value)
+        yield from _refs_de(expr.condition)
+    elif isinstance(expr, Func):
+        for arg in expr.args:
+            yield from _refs_de(arg)
+    elif isinstance(expr, list):
+        for item in expr:
+            yield from _refs_de(item)
+
+
+def _check_firmas_del_proceso(proc: ProcessDef, flow: FlowFile,
+                              issues: list[ValidationIssue]) -> None:
+    """Que las decisiones y las tareas humanas del proceso se estén hablando.
+
+    Nace de un flow que compiló, se desplegó y **rechazó una licencia sin que ninguna persona
+    la mirara**: el paso que debía esperar al jefe había quedado `automated`, y la decisión
+    evaluaba una señal que nadie emitía, así que la condición nunca se cumplía y todo caía
+    al `else` en menos de un segundo. Ningún chequeo lo marcaba: el archivo era válido.
+    """
+    where = f"process.{proc.name}"
+    pasos = [flow.steps[r.target] for s in proc.stages for r in s.steps
+             if r.target in flow.steps]
+    humanos = {p.name for p in pasos if p.type == "human_task"}
+
+    leidas: set[str] = set()
+    for stage in proc.stages:
+        for branch in stage.branches:
+            for ref in _refs_de(branch.condition):
+                if ref.kind == "signals" and len(ref.parts) >= 2:
+                    leidas.add(ref.parts[1])
+
+    for nombre in sorted(leidas - humanos):
+        if nombre not in flow.steps:
+            detalle = "no es un step de este archivo"
+        elif nombre not in {p.name for p in pasos}:
+            detalle = "es un step que este proceso no ejecuta"
+        else:
+            detalle = f"es un step de tipo '{flow.steps[nombre].type}', no un human_task"
+        issues.append(ValidationIssue(
+            "error",
+            f"{where}: una decisión espera la firma de '{nombre}', que {detalle}. "
+            f"Esa señal no va a llegar nunca, así que la condición siempre es falsa y el "
+            f"proceso se va a ir siempre por el 'else'",
+            where,
+        ))
+
+    # Una tarea humana que ofrece **más de una** señal está pidiendo una elección. Si ninguna
+    # decisión la lee, la elección se descarta: aprobar y rechazar terminan igual. Con una sola
+    # señal declarada no se avisa — ahí el paso es un acuse de recibo, no una bifurcación, y
+    # esperar sin ramificar es legítimo.
+    for paso in pasos:
+        if paso.type == "human_task" and len(paso.signals) > 1 \
+                and paso.name not in leidas:
+            issues.append(ValidationIssue(
+                "warning",
+                f"{where}: '{paso.name}' pide elegir entre {paso.signals} y ninguna decisión "
+                f"lee su firma: hoy todas las respuestas siguen el mismo camino",
+                where,
+            ))
 
 
 def _emitted_events(flow: FlowFile) -> set[str]:

@@ -210,3 +210,100 @@ def test_ref_valida_en_el_mismo_archivo_no_avisa(parser):
     rule "r" { on_event: "cosa.lista" execute: process.p }
     '''
     assert _warnings(parser, source) == []
+
+
+# ------------------------------------------- que la firma y la decisión se hablen
+#
+# Nacen de un flow que compiló, se desplegó y **rechazó una licencia sin que ninguna persona la
+# mirara**. Tenía dos defectos y ninguno era de sintaxis: el paso que debía esperar al jefe
+# quedó `automated`, y la decisión evaluaba una señal que nadie emitía. Un archivo válido que
+# hacía lo contrario de lo pedido.
+
+_PROC = '''
+process "gestion" {{
+  input {{ a: string required }}
+  stage "revision" {{ mode: sequential steps [step.revisar] }}
+  stage "decidir" {{
+    mode: decision
+    steps []
+    when signals.{firma}.signal == "approve" -> stage.ok
+    else -> stage.mal
+  }}
+  stage "ok"  {{ mode: sequential steps [step.avisar_ok] }}
+  stage "fin" {{ mode: decision steps [] else -> stage.end }}
+  stage "mal" {{ mode: sequential steps [step.avisar_mal] }}
+}}
+step "revisar" {{ {revisar} }}
+step "avisar_ok"  {{ type: notification channel: "email" template: "ok" }}
+step "avisar_mal" {{ type: notification channel: "email" template: "mal" }}
+'''
+
+_HUMANO = 'type: human_task assignee: "rol:jefe" signals ["approve", "reject"]'
+
+
+def test_el_caso_bien_escrito_no_se_marca(parser):
+    """Guarda contra falsos positivos: si esto empieza a fallar, los chequeos molestan más
+    de lo que ayudan."""
+    fuente = _PROC.format(firma="revisar", revisar=_HUMANO)
+    assert _errors(parser, fuente) == []
+    assert _warnings(parser, fuente) == []
+
+
+def test_una_decision_que_espera_una_firma_de_un_paso_automatico(parser):
+    """El defecto exacto que rechazó la licencia: el paso no espera a nadie, así que la señal
+    nunca llega y todo cae al else."""
+    fuente = _PROC.format(firma="revisar", revisar='type: automated retries: 1')
+    errores = _errors(parser, fuente)
+
+    assert len(errores) == 1
+    assert "revisar" in errores[0].message
+    assert "automated" in errores[0].message
+    assert "else" in errores[0].message
+
+
+def test_una_decision_que_espera_una_firma_inexistente(parser):
+    fuente = _PROC.format(firma="paso_que_no_existe", revisar=_HUMANO)
+    errores = _errors(parser, fuente)
+
+    assert any("paso_que_no_existe" in e.message for e in errores)
+    assert any("no es un step de este archivo" in e.message for e in errores)
+
+
+def test_una_firma_que_nadie_lee_avisa(parser):
+    """Pedir elegir entre aprobar y rechazar, y después no ramificar, hace que las dos
+    respuestas terminen igual. No es un error —el proceso corre— pero casi nunca es lo que
+    se quiso."""
+    fuente = '''
+    process "gestion" {
+      input { a: string required }
+      stage "revision" { mode: sequential steps [step.revisar] }
+      stage "aviso" { mode: sequential steps [step.avisar] }
+    }
+    step "revisar" { type: human_task assignee: "rol:jefe" signals ["approve", "reject"] }
+    step "avisar" { type: notification channel: "email" template: "listo" }
+    '''
+    avisos = _warnings(parser, fuente)
+
+    assert len(avisos) == 1
+    assert "revisar" in avisos[0].message
+    assert _errors(parser, fuente) == []
+
+
+def test_una_firma_de_una_sola_senal_no_avisa(parser):
+    """Con una sola señal el paso es un acuse de recibo, no una bifurcación: esperar sin
+    ramificar es legítimo y avisar sería ruido."""
+    fuente = '''
+    process "gestion" {
+      input { a: string required }
+      stage "revision" { mode: sequential steps [step.revisar] }
+    }
+    step "revisar" { type: human_task assignee: "rol:jefe" signals ["listo"] }
+    '''
+    assert _warnings(parser, fuente) == []
+
+
+def test_los_ejemplos_del_repositorio_quedan_limpios(parser, ceibal_source, venta_source):
+    """Los tres chequeos nuevos se agregan sobre flows que ya existen y están bien escritos.
+    Si alguno los marca, el chequeo está mal, no el ejemplo."""
+    for fuente in (ceibal_source, venta_source):
+        assert validate_flow(parser.parse(fuente)) == []

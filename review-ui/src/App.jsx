@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { api } from './api.js'
 import { lineDiff } from './diff.js'
 import Operacion from './ops.jsx'
@@ -24,6 +24,52 @@ export default function App() {
   const [info, setInfo] = useState('')
   const [apiKey, setApiKey] = useState(localStorage.getItem('tflow_api_key') || '')
   const [showCompose, setShowCompose] = useState(false)
+  // Edición del borrador. `editado` es el texto en pantalla; mientras difiera del guardado, el
+  // veredicto que trae el borrador ya no habla de lo que se está viendo.
+  const [editando, setEditando] = useState(false)
+  const [editado, setEditado] = useState('')
+  const [guardando, setGuardando] = useState(false)
+  const [verDiff, setVerDiff] = useState('desplegada')
+  const areaRef = useRef(null)
+
+  const sinGuardar = editando && editado !== selected?.source
+
+  // La línea del primer error de sintaxis, para marcarla en la columna de números. Con cambios
+  // sin guardar no se marca nada: el veredicto habla de la versión anterior, y señalar una
+  // línea del texto nuevo apuntaría a cualquier lado.
+  const lineaError = sinGuardar
+    ? null
+    : (selected?.validation?.issues || []).find((i) => i.line != null)?.line ?? null
+
+  /**
+   * Lleva el cursor a `linea`/`columna` del editor y deja la línea seleccionada.
+   *
+   * Abre el editor si estaba cerrado: el revisor que hace clic en un error quiere corregirlo,
+   * no mirarlo de más cerca. `setTimeout` porque el textarea todavía no existe en el DOM en
+   * ese mismo tick.
+   *
+   * Selecciona la **línea entera** en vez de poner el cursor en la columna: el rango marcado
+   * se ve, un cursor en la columna 62 de una línea larga no. La columna igual se usa para
+   * dejar el cursor donde corresponde dentro de la selección.
+   */
+  const irALinea = (linea, columna) => {
+    if (!editando) editar()
+    setTimeout(() => {
+      const area = areaRef.current
+      if (!area) return
+      const lineas = area.value.split('\n')
+      const indice = Math.min(Math.max(linea - 1, 0), lineas.length - 1)
+      const desde = lineas.slice(0, indice).reduce((n, l) => n + l.length + 1, 0)
+      const hasta = desde + lineas[indice].length
+      area.focus()
+      area.setSelectionRange(desde, hasta)
+      // Sin esto la selección queda fuera de la vista en un archivo largo, que es justamente
+      // el caso donde alguien necesita que lo lleven.
+      const alto = area.clientHeight
+      const porLinea = area.scrollHeight / Math.max(lineas.length, 1)
+      area.scrollTop = Math.max(0, indice * porLinea - alto / 2)
+    }, 0)
+  }
 
   const refresh = async () => {
     try {
@@ -41,10 +87,52 @@ export default function App() {
       const draft = await api.getDraft(id)
       setSelected(draft)
       setBaseSource(draft.base_source || await api.getLatestSource(draft.name))
+      // Abrir otro borrador cierra el editor: dejarlo abierto mostraría el texto de uno sobre
+      // el veredicto de otro.
+      setEditando(false)
+      setEditado('')
+      setVerDiff('desplegada')
       setInfo('')
       setError('')
     } catch (e) {
       setError(e.message)
+    }
+  }
+
+  const editar = () => {
+    setEditado(selected.source)
+    setEditando(true)
+    setInfo('')
+  }
+
+  const cancelarEdicion = () => {
+    if (sinGuardar && !confirm('Perdés los cambios que no guardaste. ¿Cerrar el editor?')) return
+    setEditando(false)
+    setEditado('')
+  }
+
+  // Guardar **es** validar: no hay forma de dejar una corrección sin que el parser opine.
+  // El borrador vuelve con su veredicto nuevo y el editor queda abierto, porque arreglar un
+  // error suele destapar el siguiente y la vuelta cuesta menos de un segundo.
+  const validarYGuardar = async () => {
+    const comment = prompt('Qué corregiste (queda en el historial del borrador):', '')
+    if (comment === null) return
+    const actor = prompt('Tu usuario (actor_id):', 'dev')
+    if (actor === null) return
+    setGuardando(true)
+    try {
+      const draft = await api.editDraftSource(selected.draft_id, editado, actor || 'dev', comment)
+      setSelected(draft)
+      setEditado(draft.source)
+      setInfo(draft.validation?.parses === true
+        ? '✓ Guardado y compila'
+        : 'Guardado — el parser todavía tiene observaciones')
+      setError('')
+      refresh()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setGuardando(false)
     }
   }
 
@@ -54,6 +142,12 @@ export default function App() {
   }
 
   const approve = async () => {
+    // Lo que se despliega es la fuente **guardada**, no la que está en el textarea. Con
+    // cambios sin guardar, la pantalla estaría mostrando una cosa y el deploy publicando otra:
+    // es la confusión más cara que puede tener este editor.
+    if (sinGuardar && !confirm(
+      'Tenés cambios sin guardar. Se va a desplegar la última versión guardada, ' +
+      'no lo que estás viendo. ¿Seguir igual?')) return
     // Aprobar un borrador que no compila es un deploy que va a fallar. No se bloquea
     // (puede haberse editado fuera, o el parser puede haber estado caído), pero tiene que
     // ser una decisión consciente y no un click de más.
@@ -142,6 +236,9 @@ export default function App() {
                 <strong>{d.name}</strong>
                 <span className={`status ${d.status}`}>{d.status}</span>
                 <ValidationBadge validation={d.validation} />
+                {/* Un borrador corregido ya pasó por una persona. Quien lo abra después
+                    quiere saberlo antes de leerlo como si fuera salida cruda del modelo. */}
+                {d.editado && <span className="badge editado">corregido</span>}
                 <p>{d.description?.slice(0, 80)}</p>
               </li>
             ))}
@@ -157,6 +254,9 @@ export default function App() {
                   {selected.status}</span></h2>
                 {selected.status === 'pending' && (
                   <div className="actions">
+                    {!editando && (
+                      <button className="edit" onClick={editar}>Corregir</button>
+                    )}
                     <button className="approve" onClick={approve}>Aprobar y desplegar</button>
                     <button className="reject" onClick={reject}>Rechazar</button>
                   </div>
@@ -164,8 +264,23 @@ export default function App() {
               </div>
               <p className="desc">{selected.description}</p>
               <ValidationPanel validation={selected.validation}
-                               provider={selected.provider} />
-              <DiffView oldText={baseSource} newText={selected.source} />
+                               provider={selected.provider}
+                               desactualizada={sinGuardar}
+                               onIrALinea={selected.status === 'pending' ? irALinea : null} />
+              {editando ? (
+                <Editor ref={areaRef} texto={editado} onCambio={setEditado}
+                        sinGuardar={sinGuardar} guardando={guardando}
+                        onGuardar={validarYGuardar} onCancelar={cancelarEdicion}
+                        lineaError={lineaError} />
+              ) : (
+                <>
+                  <SelectorDiff valor={verDiff} onCambio={setVerDiff}
+                                hayOriginal={!!selected.source_generado} />
+                  <DiffView
+                    oldText={verDiff === 'modelo' ? selected.source_generado : baseSource}
+                    newText={selected.source} />
+                </>
+              )}
             </>
           ) : (
             <div className="placeholder">Seleccioná un borrador para revisarlo</div>
@@ -192,9 +307,52 @@ function ValidationBadge({ validation }) {
   return <span className={`badge ${cls}`}>{label}</span>
 }
 
-function ValidationPanel({ validation, provider }) {
-  const { cls } = validationState(validation)
-  const issues = validation?.issues || []
+// Con cambios sin guardar, el veredicto que trae el borrador habla de la versión anterior.
+// Mostrarlo con su color diría que el código de la pantalla compila, y nadie lo verificó: es
+// exactamente la mentira que este panel existe para no contar.
+// El mensaje del parser trae, después de la primera línea, un fragmento del código con un
+// `^` apuntando a la columna exacta. Renderizarlo como texto corrido colapsa los saltos y deja
+// el apuntador flotando al final: la información llegaba y la pantalla la destruía. Va en
+// `<pre>` con la misma fuente monoespaciada del editor, que es lo que hace que el `^` caiga
+// donde tiene que caer.
+function Issue({ issue, onIr }) {
+  const [cabecera, ...contexto] = (issue.message || '').split('\n')
+  const ubicado = issue.line != null && onIr
+  return (
+    <li className={issue.level}>
+      <span className="issue-level">{issue.level}</span>
+      {issue.block && <span className="issue-block">{issue.block}</span>}
+      {/* Decir "línea 43" y no poder ir ahí obliga a contar a mano. Con la línea como dato,
+          el error es el camino hacia el error. */}
+      {ubicado && (
+        <button className="ir-a-linea" onClick={() => onIr(issue.line, issue.column)}>
+          ir a la línea {issue.line}
+        </button>
+      )}
+      <span className="issue-msg">{cabecera}</span>
+      {contexto.length > 0 && (
+        <pre className="issue-ctx">{contexto.join('\n')}</pre>
+      )}
+    </li>
+  )
+}
+
+function ValidationPanel({ validation, provider, desactualizada, onIrALinea }) {
+  const { cls } = desactualizada ? { cls: 'unknown' } : validationState(validation)
+  const issues = desactualizada ? [] : (validation?.issues || [])
+  if (desactualizada) {
+    return (
+      <div className="validation unknown">
+        <div className="validation-head">
+          <span className="badge unknown">sin validar</span>
+          <span className="provider">
+            editaste el código — el veredicto anterior ya no habla de esto
+          </span>
+        </div>
+        <p className="validation-ok">Guardá para que el parser lo revise.</p>
+      </div>
+    )
+  }
   return (
     <div className={`validation ${cls}`}>
       <div className="validation-head">
@@ -212,17 +370,86 @@ function ValidationPanel({ validation, provider }) {
       {issues.length > 0 && (
         <ul className="issues">
           {issues.map((issue, i) => (
-            <li key={i} className={issue.level}>
-              <span className="issue-level">{issue.level}</span>
-              {issue.block && <span className="issue-block">{issue.block}</span>}
-              {issue.message}
-            </li>
+            <Issue key={i} issue={issue} onIr={onIrALinea} />
           ))}
         </ul>
       )}
       {issues.length === 0 && cls === 'ok' && (
         <p className="validation-ok">Sin observaciones del parser.</p>
       )}
+    </div>
+  )
+}
+
+// El editor es deliberadamente pobre: un textarea. Lo que se corrige acá son tres líneas —un
+// tipo de paso inventado, un estado mal escrito, una concatenación que el lenguaje no tiene—,
+// no se escribe un flow desde cero. Para eso está el archivo `.tflow` en el repositorio.
+const Editor = React.forwardRef(function Editor(
+  { texto, onCambio, sinGuardar, guardando, onGuardar, onCancelar, lineaError }, ref,
+) {
+  const gutterRef = useRef(null)
+  const total = texto.split('\n').length
+
+  // El textarea no emite su scroll a nadie, así que la columna de números se sincroniza a
+  // mano. Sin esto los números se quedan quietos mientras el código se mueve, que es peor que
+  // no tenerlos: mienten.
+  const sincronizar = (e) => {
+    if (gutterRef.current) gutterRef.current.scrollTop = e.target.scrollTop
+  }
+
+  return (
+    <div className="editor">
+      <div className="editor-head">
+        <span className="editor-label">
+          Corrigiendo la fuente
+          {sinGuardar && <em className="sin-guardar"> · sin guardar</em>}
+        </span>
+        <div className="editor-actions">
+          <button className="approve" onClick={onGuardar} disabled={guardando || !sinGuardar}>
+            {guardando ? 'Validando…' : 'Validar y guardar'}
+          </button>
+          <button onClick={onCancelar}>Cerrar editor</button>
+        </div>
+      </div>
+      <div className="editor-cuerpo">
+        {/* `aria-hidden`: para un lector de pantalla esta columna es ruido — repite números
+            sin contenido. El textarea de al lado ya tiene el código. */}
+        <div className="editor-gutter" ref={gutterRef} aria-hidden="true">
+          {Array.from({ length: total }, (_, i) => (
+            <div key={i} className={i + 1 === lineaError ? 'linea-error' : ''}>{i + 1}</div>
+          ))}
+        </div>
+        <textarea
+          ref={ref}
+          className="editor-area"
+          spellCheck={false}
+          /* Sin ajuste de línea: si el textarea parte una línea larga en dos filas, un número
+             deja de corresponder a una fila y toda la columna se corre. */
+          wrap="off"
+          value={texto}
+          onChange={(e) => onCambio(e.target.value)}
+          onScroll={sincronizar}
+        />
+      </div>
+    </div>
+  )
+})
+
+// Contra qué se compara. Por defecto contra la versión desplegada, que es la pregunta del
+// revisor ("¿qué cambia esto de lo que ya está corriendo?"). Contra el original del modelo
+// solo aparece si alguien editó: es la otra pregunta, la de quién escribió qué.
+function SelectorDiff({ valor, onCambio, hayOriginal }) {
+  if (!hayOriginal) return null
+  return (
+    <div className="selector-diff">
+      <button className={valor === 'desplegada' ? 'activo' : ''}
+              onClick={() => onCambio('desplegada')}>
+        contra lo desplegado
+      </button>
+      <button className={valor === 'modelo' ? 'activo' : ''}
+              onClick={() => onCambio('modelo')}>
+        contra lo que generó el modelo
+      </button>
     </div>
   )
 }

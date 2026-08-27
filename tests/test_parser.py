@@ -88,8 +88,11 @@ def test_validation_clean(parser, ceibal_source):
 def test_venta_decision_stages(parser, venta_source):
     flow = parser.parse(venta_source)
     proc = flow.processes["venta_internet_hogar"]
+    # Sin `fin_ok`: era un stage decision de `else -> stage.end` puesto para que la rama buena
+    # no siguiera de largo hacia la de rechazo. Desde que las ramas de una decisión no se
+    # derraman una en otra, ese cierre no hace falta y el archivo dice lo que hace.
     assert [s.name for s in proc.stages] == [
-        "validacion", "aprobacion", "decidir", "activacion", "fin_ok", "rechazo"]
+        "validacion", "aprobacion", "decidir", "activacion", "rechazo"]
     decidir = proc.stages[2]
     assert decidir.mode == "decision"
     assert len(decidir.branches) == 2
@@ -173,3 +176,105 @@ def test_las_unidades_de_tiempo_aceptan_singular_y_plural(parser, unidad, segund
     step "uno" {{ type: human_task signals ["approve"] timeout: {unidad} }}
     '''
     assert parser.parse(src).steps["uno"].timeout_seconds == segundos
+
+
+# ------------------------------------------- dónde está el error, como dato
+#
+# `TeleFlowSyntaxError` siempre llevó `line` y `column`, pero el parser-service los aplastaba
+# dentro del texto del mensaje. Del otro lado, la pantalla de revisión mostraba "línea 43,
+# columna 62" y no podía llevar al revisor hasta ahí: había que contar a mano. Estos tests
+# fijan que la posición viaje como dato hasta el borde del servicio.
+
+# Un identificador con tilde: falla exactamente en el carácter, así que la posición reportada
+# se puede afirmar sin ambigüedad. Con un error que el lexer arrastra —`requiredd` se lexa como
+# un identificador válido y recién explota en el `}` de la línea siguiente— el test estaría
+# fijando dónde se *descubre* el error, no dónde está.
+FUENTE_CON_ERROR_EN_LA_LINEA_3 = (
+    'process "p" {\n'
+    '  input { a: string required }\n'
+    '  stage "s" { mode: sequential steps [step.notificación] }\n'
+    '}\n'
+)
+
+
+def test_el_error_de_sintaxis_lleva_linea_y_columna():
+    from teleflow.dsl.parser import get_parser
+
+    with pytest.raises(TeleFlowSyntaxError) as exc:
+        get_parser().parse(FUENTE_CON_ERROR_EN_LA_LINEA_3)
+
+    assert exc.value.line == 3
+    assert exc.value.column is not None
+
+
+def test_el_mensaje_incluye_el_fragmento_con_el_apuntador():
+    """El `^` señala la columna exacta. Sirve solo si sobrevive con sus saltos de línea:
+    renderizado como texto corrido queda flotando al final y no apunta a nada."""
+    from teleflow.dsl.parser import get_parser
+
+    with pytest.raises(TeleFlowSyntaxError) as exc:
+        get_parser().parse('entity "x" {\n  fields {\n    a: string requiredd\n  }\n}\n')
+
+    lineas = exc.value.message.split("\n")
+    assert len(lineas) > 1, "el mensaje tiene que traer el fragmento del código, no solo texto"
+    assert any("^" in l for l in lineas[1:])
+
+
+def test_el_servicio_publica_la_posicion_del_error():
+    """Que la excepción los traiga no sirve si el servicio no los expone: es donde se perdían."""
+    from fastapi.testclient import TestClient
+
+    from teleflow.parser_service.main import app
+
+    with TestClient(app) as client:
+        r = client.post("/parse", json={
+            "source": FUENTE_CON_ERROR_EN_LA_LINEA_3, "name": "x",
+        })
+
+    assert r.status_code == 200
+    issue = r.json()["issues"][0]
+    assert issue["block"] == "syntax"
+    assert issue["line"] == 3
+    assert issue["column"] is not None
+
+
+def test_los_issues_del_validador_no_inventan_posicion():
+    """Un error del validador habla de un bloque entero, no de una posición en el archivo.
+    Devolver una línea cualquiera mandaría al revisor a un lugar que no tiene nada que ver."""
+    from fastapi.testclient import TestClient
+
+    from teleflow.parser_service.main import app
+
+    with TestClient(app) as client:
+        r = client.post("/parse", json={
+            "source": (
+                'process "p" {\n'
+                '  input { a: string required }\n'
+                '  stage "s" { mode: sequential steps [step.no_existe] }\n'
+                '}\n'
+            ),
+            "name": "x",
+        })
+
+    cuerpo = r.json()
+    assert cuerpo["valid"] is False
+    assert cuerpo["issues"], "el validador tenía que quejarse del step inexistente"
+    assert all(i["line"] is None for i in cuerpo["issues"])
+
+
+def test_un_identificador_con_tilde_no_parsea():
+    """`notificación` es lo natural de escribir en castellano y el lenguaje no lo acepta: los
+    identificadores son ASCII, el texto entre comillas no. La regla está en el prompt del
+    composer; este test fija el comportamiento que ese prompt describe."""
+    from teleflow.dsl.parser import get_parser
+
+    with pytest.raises(TeleFlowSyntaxError) as exc:
+        get_parser().parse(
+            'process "p" {\n'
+            '  input { a: string required }\n'
+            '  stage "s" { mode: sequential steps [step.notificación] }\n'
+            '}\n'
+        )
+
+    assert "ó" in exc.value.message
+    assert exc.value.line == 3
