@@ -91,11 +91,6 @@ process "gestion_cobranza" {
     mode: sequential
     steps [step.notificar_cierre]
   }
-  stage "fin" {
-    mode: decision
-    steps []
-    else -> stage.end
-  }
   stage "derivacion" {
     mode: sequential
     steps [step.notificar_derivacion]
@@ -141,8 +136,8 @@ step "notificar_derivacion" {
 }
 
 NOTAS SOBRE EL EJEMPLO:
-- Un stage `decision` compara una señal y ramifica. Fijate el stage "fin": después de la
-  rama buena hace falta un decision con `else -> stage.end` para terminar el proceso.
+- Un stage `decision` compara una señal y ramifica. Cada rama termina sola: al llegar al
+  stage de la rama de al lado, el proceso completa. No hace falta cerrar nada.
 - Un paso que espera a una persona es type: human_task con signals ["approve", "reject"].
 - Tipos de campo: string, number, date, datetime, bool, enum["a","b"].
   Modificadores: required, optional, unique, default(v), range(a,b).

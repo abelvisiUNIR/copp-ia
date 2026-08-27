@@ -88,8 +88,11 @@ def test_validation_clean(parser, ceibal_source):
 def test_venta_decision_stages(parser, venta_source):
     flow = parser.parse(venta_source)
     proc = flow.processes["venta_internet_hogar"]
+    # Sin `fin_ok`: era un stage decision de `else -> stage.end` puesto para que la rama buena
+    # no siguiera de largo hacia la de rechazo. Desde que las ramas de una decisión no se
+    # derraman una en otra, ese cierre no hace falta y el archivo dice lo que hace.
     assert [s.name for s in proc.stages] == [
-        "validacion", "aprobacion", "decidir", "activacion", "fin_ok", "rechazo"]
+        "validacion", "aprobacion", "decidir", "activacion", "rechazo"]
     decidir = proc.stages[2]
     assert decidir.mode == "decision"
     assert len(decidir.branches) == 2
