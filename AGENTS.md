@@ -90,6 +90,9 @@ tflow validate|deploy|flows|execute|status|signal|compose|drafts|approve|openapi
 - **Tests** nombrados por el comportamiento, en español (`test_una_carrera_da_409_y_no_500`).
 - **Nada inventado**: toda afirmacion sobre el codigo cita `archivo:linea` y su provenance
   (`copp-ia@<rama>@<sha>`). Lo comprobado se separa de lo inferido, que se marca `(inferencia)`.
+  La ruta va **desde la raiz del repo** (`teleflow/gateway/main.py:145`, no `main.py:145`: hay
+  seis `main.py`). Un test se cita `tests/archivo.py::nombre_test`. Unica excepcion: dentro de
+  una carpeta de `spec/features/`, los documentos hermanos se citan por nombre (`spec.md:42`).
 - **Autoridad ante conflicto**: codigo > `docs/*.typ` > `.md` / README.
 - **Toda extension del DSL empieza en `teleflow/dsl/teleflow.lark`** (ADR-001).
 - **Doc que describe un modulo se actualiza en el mismo commit que cambia el modulo** (incluida su

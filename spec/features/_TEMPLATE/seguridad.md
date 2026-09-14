@@ -11,8 +11,9 @@ reviewed: <YYYY-MM-DD>
 
 <!--
   status: borrador | implementada (linea base as-built)
-  Lo escribe el subagente `seguridad-infra`. Nunca copia un secreto, ni siquiera de ejemplo:
-  si aparece uno en el codigo, se cita la ruta y se escribe [REDACTED].
+  Lo escribe el subagente `seguridad-infra`. Nunca copia un secreto real: si aparece uno, se
+  cita la ruta y se escribe [REDACTED]. Los defaults de desarrollo publicos del repo
+  (dev-key-change-me, teleflow:teleflow) se nombran literales: el hueco es que existan.
 -->
 
 ## Superficie expuesta

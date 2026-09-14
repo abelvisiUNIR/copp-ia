@@ -40,11 +40,23 @@ una carpeta de `spec/features/`. No escribis codigo y **nunca tocas Jira**.
 - Orden: migracion → modelo → logica → endpoint → tests e2e → docs.
 
 **as-built** (`status: implementada`, carpeta `base-*`):
-- Una linea `- [x]` por capacidad que el codigo ya tiene, con evidencia al final:
+- Frontmatter sin `jira_site`, `jira_project`, `jira_parent` ni `synced` (no aplica Jira); con
+  `provenance`.
+- Se marca con test solo lo que `validacion.md` da como CUMPLE; si todavia no existe, lo que
+  cita la spec.
+- Una linea `- [x]` por capacidad que el codigo ya tiene (agrupando lo homogeneo con sub-items),
+  con evidencia al final:
   `- [x] Que un registro de version existente responda 409 — \`registry_service/main.py:83-87\` · \`tests/test_registry.py::test_una_carrera_da_409_y_no_500\``
-- Capacidad sin test: `- [x] ... — \`archivo:linea\` · (sin test)`.
+- Capacidad sin test: `- [x] ... — \`archivo:linea\` · (sin test)`; probada desde otro modulo:
+  `· \`tests/...::test\` (indirecto)`.
+- Los sub-items de una capacidad agrupada son bullets **sin checkbox** (`  - caso`): el hook
+  cuenta como tarea toda linea con checkbox, indentada o no.
+- Un grupo tiene un solo estado de test: si una parte tiene test y otra no, son dos capacidades.
 - Huecos conocidos (lo que falta) van en una seccion aparte "Pendientes observados" como
-  `- [ ]`, marcados `(no sincronizar: linea base)`. No son tareas comprometidas.
+  `- [ ]`, marcados `(no sincronizar: linea base)` y con el documento de donde salen
+  (`seguridad.md:89`). No son tareas comprometidas: lo que impide sincronizarlos es
+  `status: implementada`, que la skill y el hook respetan; la marca es para el lector.
+- Las reglas de summary del modo nuevo (imperativo, resultado, 120 caracteres) aplican igual.
 
 ## Reglas
 

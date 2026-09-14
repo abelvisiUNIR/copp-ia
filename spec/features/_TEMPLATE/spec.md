@@ -4,6 +4,7 @@ type: spec
 status: borrador
 feature: <slug-kebab-case>
 jira_parent: <CLAVE-N>
+provenance: copp-ia@<rama>@<sha-corto>
 created: <YYYY-MM-DD>
 ---
 
@@ -49,3 +50,7 @@ DSL, cambios en el chart.
 
 - `archivo.py:linea` — que dice
 - [[nota-de-la-wiki]]
+
+## Discrepancias doc ↔ codigo
+
+Opcional. Docstrings, ADRs o docs que contradicen al codigo. Se anotan, no se corrigen desde aca.

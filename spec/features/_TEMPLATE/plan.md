@@ -3,6 +3,7 @@ project: copp-ia
 type: plan
 status: borrador
 feature: <slug-kebab-case>
+provenance: copp-ia@<rama>@<sha-corto>
 created: <YYYY-MM-DD>
 ---
 

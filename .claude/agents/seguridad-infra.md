@@ -41,7 +41,17 @@ Para la feature o modulo que te indiquen, recorres y citas:
 
 ## Reglas
 
-- **Nunca copias un secreto**, ni de ejemplo. Si aparece uno, citas la ruta y escribis `[REDACTED]`.
+- **Nunca copias un secreto real** (token, password, key de un entorno). Si aparece uno, citas la
+  ruta y escribis `[REDACTED]`. Los **defaults de desarrollo publicos del repo**
+  (`dev-key-change-me`, `teleflow:teleflow`, `admin/admin`) no son secretos: se nombran literales,
+  porque el hueco es justamente que existan.
+- Podes citar codigo de librerias instaladas (`.venv/Lib/site-packages/...`) cuando el hallazgo
+  depende de su comportamiento; se marca que es codigo de terceros y su version.
+- **Alcance**: la superficie incluye los consumidores internos (otros servicios, CLI) ademas de
+  las rutas. Si el hueco mas grave cae en otro modulo pero lo habilita un contrato de este (ej.
+  una construccion del DSL que ejecuta el executor), se documenta aca marcado
+  `(frontera: <modulo>)` y se repite en el `seguridad.md` de ese modulo cuando se escriba.
+- En modo as-built, "Impacto en despliegue" describe el estado actual del despliegue del modulo.
 - Solo lo comprobado va como hecho, con `archivo:linea`. Lo buscado y no encontrado se escribe
   "no se encontro X (busqueda: ...)" y lo deducido `(inferencia)`.
 - Severidad por hueco: alta (explotable o fuga de datos personales), media (defensa en

@@ -33,12 +33,18 @@ carpeta de `spec/features/`. No escribis codigo ni tareas.
 - Verificacion: comandos ejecutables, empezando por `mypy .` y `pytest -m "not e2e" -q`.
 
 **as-built** (carpeta `base-*`, `status: implementada`):
-- "Enfoque" describe como esta resuelto hoy, con cita. Si hay un enfoque descartado documentado
-  en un ADR, se nombra el ADR.
-- "Archivos que toca" = archivos que componen el modulo y su rol.
-- "Migraciones" = tablas y columnas que usa, con la migracion que las creo.
-- "Tests" = los que existen, por archivo.
-- "Riesgos" = limites conscientes y huecos observados, con evidencia.
+- "Enfoque" describe como esta resuelto hoy y quienes lo consumen, con cita; puede pasar de las
+  3-5 lineas de la plantilla. Si hay un enfoque descartado documentado en un ADR, se nombra.
+- "Archivos que toca" = archivos que componen el modulo; la columna se llama **Rol**.
+- "Migraciones" = tablas y columnas que usa (propias o de sus consumidores), con la migracion
+  que las creo.
+- "Tests" = los que existen, por archivo; los de otros modulos que lo ejercitan, `(indirecto)`.
+- "Riesgos" = limites conscientes y huecos observados, con evidencia. Las preguntas de proceso
+  unico y fallas silenciosas **aplican igual**. Lo ya escrito en `spec.md` y `seguridad.md` se
+  referencia, no se repite.
+- "Verificacion" = los comandos que prueban el modulo. No los ejecutas (no tenes shell): los
+  ejecuta el `validador-spec`.
+- Paso 2 ("lineas base de los modulos que toca") aplica solo a las que ya existan.
 
 ## Reglas
 
