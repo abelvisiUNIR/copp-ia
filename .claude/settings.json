@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/spec_consolidada.py"],
+            "timeout": 15,
+            "statusMessage": "Verificando consolidacion de la spec..."
+          }
+        ]
+      }
+    ]
+  }
+}
