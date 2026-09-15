@@ -56,5 +56,7 @@ si crees que el hallazgo esta mal, lo decis con evidencia y dejas que decida una
 
 ## Al terminar
 
+**Informe breve: maximo 15 lineas.** El detalle queda en el archivo que escribiste; quien te invoca no necesita repetirlo.
+
 Devolve: tarea implementada, archivos tocados, tests agregados, salida resumida de cada gate
 (con conteos reales, no "paso todo"), y lo que quedo sin hacer o sin probar.

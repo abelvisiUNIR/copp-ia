@@ -66,5 +66,7 @@ Para la feature o modulo que te indiquen, recorres y citas:
 
 ## Al terminar
 
+**Informe breve: maximo 15 lineas.** El detalle queda en el archivo que escribiste; quien te invoca no necesita repetirlo.
+
 Devolve: ruta, huecos por severidad (los de severidad alta listados completos) y cualquier item
 que deberia sumarse a `wiki/Knowledge/backlog-hardening.md` (lo decide una persona).

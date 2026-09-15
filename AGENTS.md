@@ -131,8 +131,12 @@ estados en `spec/README.md`.
 | Validacion contra spec | `validacion.md` | `validador-spec` | `/validar` |
 | Seguridad e infraestructura (transversal) | `seguridad.md` | `seguridad-infra` | `/seguridad` |
 
-- **Linea base**: `spec/features/base-*` (`status: implementada`) documenta lo que el codigo ya
-  hace. Se escribe o refresca con `/as-built <modulo>`. Nunca se sincroniza con Jira.
+- **Linea base**: `spec/features/base-*` (`status: implementada`, solo `spec.md` y `seguridad.md`)
+  documenta lo que el codigo ya hace. Se escribe **bajo demanda**, cuando una feature toca el
+  modulo, con `/as-built <modulo>`. Nunca se sincroniza con Jira.
+- **Costo**: los subagentes se invocan **de a uno**, cuando la etapa lo necesita; nunca en tandas
+  paralelas. Antes de encadenar mas de dos, se pide OK. `desglosador-tareas` y `validador-spec`
+  corren en un modelo mas barato (`model: sonnet`).
 - **Features nuevas**: `borrador` → (una persona decide) `consolidada` → `/sync-jira` en dry-run →
   confirmacion → `sincronizada`.
 - **Ciclo que se autocorrige**: implementador → revisor → validador; un hallazgo vuelve al

@@ -1,5 +1,5 @@
 ---
-description: Escribe o refresca la linea base as-built de un modulo (spec, plan, tasks, validacion, seguridad)
+description: Escribe o refresca la linea base as-built de un modulo (spec.md y seguridad.md)
 argument-hint: <modulo, ej. lenguaje-tflow> [alcance: rutas de codigo]
 allowed-tools: Bash(git rev-parse:*)
 ---
@@ -8,17 +8,25 @@ Provenance actual: copp-ia@!`git rev-parse --abbrev-ref HEAD`@!`git rev-parse --
 
 Modulo: $ARGUMENTS
 
-Carpeta destino: `spec/features/base-<modulo>/` (crearla si no existe). Todos los archivos con
-`status: implementada` y la provenance de arriba. Si falta el alcance en rutas de codigo, deducilo
-de `spec/README.md` y de la estructura del repo, y decilo antes de empezar.
+Las lineas base se escriben **bajo demanda**: cuando una feature nueva toca el modulo, no en tanda.
+Si el pedido es "todas las bases" o mas de un modulo, no lo ejecutes: pedi a la persona que elija
+uno.
 
-En orden, pasando a cada uno el modo **as-built**, la carpeta, el alcance y la provenance:
+Carpeta destino: `spec/features/base-<modulo>/` (crearla si no existe), `status: implementada` y
+la provenance de arriba. Si falta el alcance en rutas de codigo, deducilo de la estructura del
+repo y decilo antes de empezar.
 
-1. `analista-requisitos` → `spec.md` (criterios derivados de los tests existentes).
-2. `disenador-tecnico` → `plan.md` (como esta resuelto hoy).
-3. `desglosador-tareas` → `tasks.md` (capacidades `[x]` con evidencia).
-4. `validador-spec` → `validacion.md` (cobertura de la spec por tests).
-5. `seguridad-infra` → `seguridad.md`.
+**De a un subagente, en este orden, esperando que termine cada uno** (nunca en paralelo):
 
-Los pasos 4 y 5 pueden ir en paralelo. Al final mostra: criterios totales, SIN TEST, huecos de
-seguridad por severidad e inferencias abiertas. Nada de esto se sincroniza con Jira.
+1. `analista-requisitos` en modo **as-built** → `spec.md` (criterios derivados de los tests
+   existentes).
+2. `seguridad-infra` en modo **as-built** → `seguridad.md`.
+
+Pasale a cada uno solo la carpeta, el alcance en rutas y la provenance. No les pidas leer otras
+lineas base enteras como referencia.
+
+Para codigo existente no se escriben `plan.md`, `tasks.md` ni `validacion.md`: esos son del ciclo
+de una feature nueva. Si una persona los pide explicitamente para un modulo, se agregan de a uno.
+
+Al final mostra en pocas lineas: criterios totales, cuantos `(sin test)` y huecos de seguridad por
+severidad. Nada de esto se sincroniza con Jira.

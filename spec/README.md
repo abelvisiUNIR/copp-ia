@@ -8,13 +8,20 @@ un subagente que lo escribe y un comando que lo invoca.
 
 | Carpeta | `status` | Que es | Jira |
 |---|---|---|---|
-| `base-<modulo>/` | `implementada` | **Linea base as-built**: lo que hoy hace el codigo, derivado del codigo y sus tests | Nunca se sincroniza |
+| `base-<modulo>/` | `implementada` | **Linea base as-built**: lo que hoy hace el codigo, derivado del codigo y sus tests. Solo `spec.md` y `seguridad.md` | Nunca se sincroniza |
 | `<CLAVE-PADRE>-<slug>/` | `borrador` → `consolidada` → `sincronizada` | **Feature futura** | Cards via `/sync-jira` |
 | `_TEMPLATE/` | — | Plantillas de los cinco archivos | — |
 
 La linea base existe para que una feature nueva parta de lo que el codigo realmente hace y no de
-la memoria de alguien. Envejece como cualquier doc: **al cambiar el codigo de un modulo, se
-actualiza su `base-*` en el mismo commit**. Ante conflicto, manda el codigo.
+la memoria de alguien. Se escribe **bajo demanda**: cuando una feature toca un modulo que todavia
+no tiene base, se hace esa, no todas. Envejece como cualquier doc: **al cambiar el codigo de un
+modulo, se actualiza su `base-*` en el mismo commit**. Ante conflicto, manda el codigo.
+
+`base-lenguaje-tflow` (piloto) y `base-composer-ia` tienen ademas `plan.md`, `tasks.md` y/o
+`validacion.md`, escritos antes de acotar el as-built: se conservan, pero no son el estandar.
+
+**Costo**: los subagentes se invocan de a uno, cuando la etapa lo necesita. Nada de tandas en
+paralelo: cada subagente arranca de cero y relee contexto.
 
 ## Deslinde con `wiki/`
 
@@ -38,8 +45,8 @@ ADR en `wiki/Knowledge/decisions/`. El roadmap real sigue siendo `wiki/Knowledge
 | Testing: validacion contra spec | `validacion.md` | `validador-spec` | `/validar` |
 | Seguridad e infraestructura (transversal) | `seguridad.md` | `seguridad-infra` | `/seguridad` |
 
-`/as-built <modulo>` encadena analista, diseñador, desglosador, validador y seguridad en modo
-as-built para escribir o refrescar una carpeta `base-*`.
+`/as-built <modulo>` corre `analista-requisitos` y despues `seguridad-infra` en modo as-built para
+escribir o refrescar una carpeta `base-*` (un modulo por vez).
 
 ```
 spec.md   ── que se quiere y como se sabe que esta bien (criterios de aceptacion)

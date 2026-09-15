@@ -5,7 +5,10 @@ argument-hint: <carpeta-feature> <numero-o-texto-de-la-tarea>
 
 Tarea a implementar: $ARGUMENTS
 
-Orquesta este ciclo, de a una tarea:
+Orquesta este ciclo, de a una tarea y **de a un subagente por vez** (cada paso espera al anterior;
+nunca en paralelo ni en segundo plano). Si el pedido trae varias tareas, hace solo la primera y
+pregunta antes de seguir. Entre pasos pasa solo el informe breve del subagente anterior, no
+transcripciones ni archivos enteros.
 
 1. Invoca el subagente `implementador` con la carpeta y la tarea.
 2. Con lo que devuelva, invoca el subagente `revisor` sobre el cambio.

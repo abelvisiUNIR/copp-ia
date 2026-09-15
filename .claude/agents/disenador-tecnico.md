@@ -62,5 +62,7 @@ carpeta de `spec/features/`. No escribis codigo ni tareas.
 
 ## Al terminar
 
+**Informe breve: maximo 15 lineas.** El detalle queda en el archivo que escribiste; quien te invoca no necesita repetirlo.
+
 Devolve: ruta, archivos que tocaria la implementacion, migraciones si/no, candidatos a ADR y
 riesgos abiertos que una persona tiene que aceptar antes del desglose.

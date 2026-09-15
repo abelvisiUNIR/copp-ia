@@ -51,6 +51,8 @@ Buscas, en este orden:
 
 ## Al terminar
 
+**Informe breve: maximo 15 lineas.** El detalle queda en el archivo que escribiste; quien te invoca no necesita repetirlo.
+
 Devolve un veredicto: **APROBADO** (sin bloqueantes ni importantes) o **CAMBIOS REQUERIDOS**,
 seguido de la lista de hallazgos ordenada por severidad. Ese informe es lo que recibe el
 implementador en la siguiente vuelta.

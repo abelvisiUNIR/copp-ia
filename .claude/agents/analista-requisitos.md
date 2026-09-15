@@ -68,6 +68,8 @@ Quien te invoca dice el modo. Si no lo dice, preguntalo en tu respuesta y no esc
 
 ## Al terminar
 
+**Informe breve: maximo 15 lineas.** El detalle queda en el archivo que escribiste; quien te invoca no necesita repetirlo.
+
 Devolve: ruta del archivo, cantidad de criterios (y cuantos `(sin test)` si es as-built), las
 inferencias que quedaron abiertas y las preguntas que necesita responder una persona antes de
 pasar a diseño.
