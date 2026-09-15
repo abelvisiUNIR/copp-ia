@@ -51,6 +51,10 @@ Quien te invoca dice el modo. Si no lo dice, preguntalo en tu respuesta y no esc
 
 ## Reglas de contenido
 
+- **Citas con ruta desde la raiz del repo**: `teleflow/gateway/main.py:145`, nunca `main.py:145`
+  (hay seis `main.py`, dos `Dockerfile`, varios `README.md`). Tests: `tests/archivo.py::nombre_test`.
+  Terceros: `.venv/Lib/site-packages/<paquete>/<archivo>:N`. Documentos hermanos de la misma carpeta
+  de `spec/features/` si van por nombre (`spec.md:42`). Una cita suelta ambigua se considera rota.
 - **Nada inventado.** Toda afirmacion sobre el codigo cita `archivo:linea`. Lo que deducis sin
   haberlo leido se marca `(inferencia)`. Si no pudiste comprobar algo, se dice.
 - Provenance en el frontmatter (`provenance: copp-ia@<rama>@<sha>`): te la pasa quien te invoca.

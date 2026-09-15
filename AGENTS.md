@@ -101,7 +101,9 @@ tflow validate|deploy|flows|execute|status|signal|compose|drafts|approve|openapi
 ## Prohibido
 
 - `git push` — lo hace siempre el owner. Commits locales si.
-- `type: ignore` para pasar `mypy`: si el tipo no cierra, el problema es el tipo.
+- **Agregar** `type: ignore` para pasar `mypy`: si el tipo no cierra, el problema es el tipo. Los
+  que ya existen (middlewares de FastAPI y dos en `teleflow/executor_service/engine.py`) son deuda
+  conocida: no se suman nuevos y se sacan cuando se toca ese codigo.
 - Borrar, saltear o debilitar un test, relajar una validacion o cambiar un criterio de la spec
   para que el codigo "pase". Es una falla silenciosa (`wiki/Knowledge/concepts/fallas-silenciosas.md`).
 - **Credenciales en cualquier archivo**, aunque este gitignoreado: este working tree se sincroniza

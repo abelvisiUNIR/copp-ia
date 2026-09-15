@@ -60,6 +60,10 @@ una carpeta de `spec/features/`. No escribis codigo y **nunca tocas Jira**.
 
 ## Reglas
 
+- **Citas con ruta desde la raiz del repo**: `teleflow/gateway/main.py:145`, nunca `main.py:145`
+  (hay seis `main.py`, dos `Dockerfile`, varios `README.md`). Tests: `tests/archivo.py::nombre_test`.
+  Terceros: `.venv/Lib/site-packages/<paquete>/<archivo>:N`. Documentos hermanos de la misma carpeta
+  de `spec/features/` si van por nombre (`spec.md:42`). Una cita suelta ambigua se considera rota.
 - Nada inventado: la evidencia se cita, lo deducido se marca `(inferencia)`.
 - Solo escribis en `spec/features/`.
 

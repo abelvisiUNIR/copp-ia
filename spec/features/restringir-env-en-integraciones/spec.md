@@ -300,7 +300,7 @@ registrados. Ya anotado en `spec/features/base-lenguaje-tflow/plan.md:183`.
 - `docs/checklist-instalacion.md:42-58,161-166` — Secret de aplicacion y rotacion
 - `tests/test_adapters.py:27-64,143-148`, `tests/test_validator.py:305-309`,
   `tests/e2e/conftest.py:48`
-- `spec/features/base-lenguaje-tflow/seguridad.md:89,93,95`, `plan.md:168-169,183`,
+- `spec/features/base-lenguaje-tflow/seguridad.md:89,93,95`, `spec/features/base-lenguaje-tflow/plan.md:168-169,183`,
   `spec.md:113-117`
 - `wiki/Knowledge/backlog-hardening.md:147-169` — item 8
 - [[fallas-silenciosas]]

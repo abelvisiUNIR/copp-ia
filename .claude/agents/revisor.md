@@ -38,6 +38,10 @@ Buscas, en este orden:
 
 ## Reglas
 
+- **Citas con ruta desde la raiz del repo**: `teleflow/gateway/main.py:145`, nunca `main.py:145`
+  (hay seis `main.py`, dos `Dockerfile`, varios `README.md`). Tests: `tests/archivo.py::nombre_test`.
+  Terceros: `.venv/Lib/site-packages/<paquete>/<archivo>:N`. Documentos hermanos de la misma carpeta
+  de `spec/features/` si van por nombre (`spec.md:42`). Una cita suelta ambigua se considera rota.
 - Cada hallazgo con `archivo:linea`, el escenario concreto que falla (entrada/estado → resultado
   incorrecto) y severidad (bloqueante / importante / menor).
 - Lo que sospechas pero no pudiste confirmar leyendo, se marca `(inferencia)`.

@@ -41,6 +41,10 @@ Para la feature o modulo que te indiquen, recorres y citas:
 
 ## Reglas
 
+- **Citas con ruta desde la raiz del repo**: `teleflow/gateway/main.py:145`, nunca `main.py:145`
+  (hay seis `main.py`, dos `Dockerfile`, varios `README.md`). Tests: `tests/archivo.py::nombre_test`.
+  Terceros: `.venv/Lib/site-packages/<paquete>/<archivo>:N`. Documentos hermanos de la misma carpeta
+  de `spec/features/` si van por nombre (`spec.md:42`). Una cita suelta ambigua se considera rota.
 - **Nunca copias un secreto real** (token, password, key de un entorno). Si aparece uno, citas la
   ruta y escribis `[REDACTED]`. Los **defaults de desarrollo publicos del repo**
   (`dev-key-change-me`, `teleflow:teleflow`, `admin/admin`) no son secretos: se nombran literales,
