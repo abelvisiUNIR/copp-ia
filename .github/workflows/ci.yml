@@ -1,8 +1,11 @@
 name: CI
 
+# Las ramas de chunk se cubren por el PR, no por el push: con una rama por chunk el nombre no se
+# puede enumerar aca. Listar `devyos` ademas de `desarrollo` hacia que cada chunk corriera el CI
+# dos veces —una por el push y otra por el PR— pagando el doble por el mismo commit.
 on:
   push:
-    branches: [desarrollo, devyos]
+    branches: [desarrollo]
   pull_request:
     branches: [desarrollo]
 

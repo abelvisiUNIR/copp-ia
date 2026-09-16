@@ -85,7 +85,12 @@ tflow validate|deploy|flows|execute|status|signal|compose|drafts|approve|openapi
   `feat(dsl): que las ramas de una decision no se derramen una en otra`.
   Scopes: `dsl`, `gateway`, `composer`, `executor`, `registry`, `helm`, `ci`, `deploy`, `metrics`,
   `observability`, `review-ui`, `api`, `ops`, `dx`, `tests`, `docs`, `wiki`.
-- **Ramas**: una rama por chunk de trabajo. `devyos` (personal) → PR a `desarrollo`.
+- **Ramas**: **una rama por chunk**, nombrada `<tipo>/<slug-kebab-case>` con los mismos tipos que
+  los commits (`feat/observabilidad-negocio`, `fix/validator-dangling-refs`, `chore/ci-pipeline`,
+  `docs/convencion-de-ramas`). El slug describe el chunk, no el archivo que se toca. Cada rama
+  sale de `desarrollo` al dia, va por PR a `desarrollo` y **se borra al mergear**: su historia ya
+  vive en la rama base y una rama vieja solo invita a retomarla desatrasada. No hay rama personal
+  de larga vida.
 - **Nombres de archivo** en kebab-case (modulos Python en snake_case, como el paquete).
 - **Tests** nombrados por el comportamiento, en español (`test_una_carrera_da_409_y_no_500`).
 - **Nada inventado**: toda afirmacion sobre el codigo cita `archivo:linea` y su provenance
