@@ -42,7 +42,9 @@ Combinado y en este orden de madurez:
 - `pytest` + `mypy --strict` verdes tras cada cambio.
 - **CI como red desde el día uno** (Fase B) antes de tocar features grandes.
 - Ante conflicto doc↔código: **código > `.typ` > `.md`/README**.
-- Flujo git: rama `devyos` (personal) → PR a `desarrollo` en puntos limpios.
+- Flujo git: una rama por chunk, `<tipo>/<slug>` → PR a `desarrollo` en puntos limpios, y la rama
+  se borra al mergear. La rama personal `devyos` se retiró el 2026-09-15 (PR #12): duraba muchos
+  chunks y el nombre no decía qué traía.
 
 ---
 
