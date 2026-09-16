@@ -3,7 +3,7 @@ project: copp-ia
 type: backlog
 provenance: copp-ia@devyos@5941771
 created: 2026-07-25
-updated: 2026-07-25
+updated: 2026-09-14
 tags: [backlog, calidad, seguridad, producto, auditoria]
 ---
 
@@ -144,6 +144,32 @@ segundo no cambia nada.
 
 ---
 
+## 8. `${env.*}` en integraciones resuelve cualquier variable del executor
+**Estado:** 🔴 **abierto 2026-09-14** · **Prioridad:** alta · Spec en borrador:
+`spec/features/restringir-env-en-integraciones/` · Detalle: `spec/features/base-lenguaje-tflow/seguridad.md:89`
+(`copp-ia@devyos@ffd585d`)
+
+**Hecho.** `resolve_env` acepta cualquier nombre de variable (`teleflow/executor_service/adapters.py:31`)
+y lo busca en el entorno del proceso (`adapters.py:72`). El valor se usa en `base_url`, en
+`Authorization` y en un header de nombre libre, y el request sale hacia la `base_url` que declara
+el flow (`adapters.py:121-139`). Todos los servicios Python comparten el mismo entorno, que
+incluye `DATABASE_URL`, `RABBITMQ_URL`, `TELEFLOW_API_KEY` y `TELEFLOW_API_KEY_SCOPES`
+(`docker-compose.yml:3-8`; en el chart `helm/teleflow/templates/_helpers.tpl:264-276`), y la key
+de bootstrap tiene scopes `*` por default (`teleflow/common/config.py:23`). El `validator` no
+inspecciona `IntegrationDef.config` (`teleflow/dsl/validator.py:128-136`).
+
+**Por qué importa.** Un flow desplegado con `flows:deploy` puede hacer salir un secreto del
+executor hacia un host propio. Eso escala de `flows:deploy` a todos los scopes (incluido
+`keys:admin`) y expone las credenciales de la capa de datos, y no deja rastro distinto a una
+integracion legitima en `audit_log`. Es el mismo patron que [[fallas-silenciosas]]: el mecanismo
+(`${env.*}` "para no poner credenciales en el `.tflow`") parece proteger y abre la puerta.
+
+**Costo.** Medio. Restringir los nombres resolubles a un prefijo dedicado, rechazarlo en el
+`validator` (para que falle en el deploy y no en runtime) y definir que hacer con los flows ya
+desplegados que usan otros nombres — eso ultimo es cambio de contrato y probablemente ADR.
+
+---
+
 ## Ideas de producto (no son deuda)
 - **UI operativa mínima antes que la colección `.http`.** El roadmap la marca opcional
   (`roadmap.md:105`), pero ataca la pregunta operativa real —"¿por qué se frenó este
@@ -160,7 +186,9 @@ segundo no cambia nada.
 3. ~~`review-ui` (5)~~ ✅ · ~~lockfile del front (7)~~ ✅ · ~~backup/restore (6)~~ ✅ — hechos
    2026-07-25.
 
-**Los 7 ítems están cerrados.** Lo que siga sale del [[roadmap]] (Fase E) o de una revisión
+4. **`${env.*}` sin lista blanca (8)** — abierto, prioridad alta (2026-09-14).
+
+**Los 7 ítems originales están cerrados.** Lo que siga sale del [[roadmap]] (Fase E) o de una revisión
 transversal nueva, no de esta lista.
 
 ## Hallazgos laterales, todavía abiertos

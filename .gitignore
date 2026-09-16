@@ -29,3 +29,8 @@ wiki/templates/
 # Respaldos locales de la base (ver scripts/backup.sh)
 backups/
 *.dump
+
+# Ajustes personales de Claude Code (permisos locales, servidores MCP habilitados): no se
+# versionan. Lo compartido del agente va en .claude/settings.json. La auth de Jira es OAuth
+# via /mcp y no vive en ningun archivo del repo.
+.claude/settings.local.json
