@@ -1,4 +1,4 @@
-# AGENTS.md — copp-ia · TeleFlow Platform
+# AGENTS.md — Coppia (base TeleFlow)
 
 Reglas para cualquier agente de IA que trabaje en este repo (Claude Code, OpenCode, Cursor,
 Copilot, Codex). Es la fuente unica: `CLAUDE.md` la importa y solo agrega lo propio de Claude Code.
@@ -102,6 +102,30 @@ tflow validate|deploy|flows|execute|status|signal|compose|drafts|approve|openapi
 - **Toda extension del DSL empieza en `teleflow/dsl/teleflow.lark`** (ADR-001).
 - **Doc que describe un modulo se actualiza en el mismo commit que cambia el modulo** (incluida su
   carpeta `spec/features/base-*`).
+
+## Nombre: Coppia, sobre una base TeleFlow
+
+El producto se llama **Coppia** — **C**lientes, **O**fertas y **P**roductos con **IA**. Es el
+nombre que ya usaban el repo (`copp-ia`) y el `project:` del frontmatter de toda la wiki.
+**TeleFlow** fue el nombre de trabajo con el que se construyo la base que hoy corre, y sigue vivo
+en el codigo, en los identificadores de runtime y en la documentacion previa.
+
+**No se renombra nada de lo existente.** Ni el paquete `teleflow/`, ni el CLI `tflow`, ni la
+extension `.tflow`, ni las metricas `teleflow_*`, ni la cola `teleflow.rules.v2`, ni el header
+`X-TeleFlow-API-Key`, ni las env vars `TELEFLOW_*`, ni el chart. Un identificador solo cambia si
+hay una razon funcional propia, con su ADR y su migracion —nunca por estetica—. El porque, con la
+evidencia, en [[2026-09-17-coppia-como-nombre-y-compatibilidad-teleflow]].
+
+**Lo que se construye de ahora en mas se nombra Coppia**: specs y ADRs nuevos, servicios nuevos,
+metricas nuevas (`coppia_*`), colas nuevas (`coppia.*`), repos nuevos.
+
+**Regla practica ante la duda:** si el nombre lo lee una **maquina ya instalada** —metrica, cola,
+clave de Redis, header, env var, tabla— se respeta el que existe. Si lo lee una **persona** —doc,
+spec, card de Jira, nombre de un servicio nuevo— se usa Coppia.
+
+**La compatibilidad es un criterio de aceptacion, no una cortesia.** Un `.tflow` que validaba y
+ejecutaba antes tiene que seguir validando y ejecutando igual: el DSL, el contrato del gateway y
+el esquema de la base no rompen. Una feature que no lo cumpla no esta terminada.
 
 ## Prohibido
 
