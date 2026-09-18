@@ -60,6 +60,11 @@ la promoción de uno a otro es deliberada, nunca automática).
   instancia en vuelo tiene dueño con lease y solo el dueño la ejecuta: `_recover()` corría en las
   3 réplicas sin reclamar nada y **cada deploy con un expediente en vuelo lo ejecutaba 3 veces**
   (reproducido: 63 requests donde iban 21, y 3 transiciones a FAILED).
+- [[2026-09-17-coppia-como-nombre-y-compatibilidad-teleflow]] — el producto es **Coppia**
+  (Clientes, Ofertas y Productos con IA) y la base **TeleFlow no se renombra**: 19 métricas con
+  2 dashboards y 2 reglas de alerta que las nombran, una cola declarada, un header de auth y las
+  env vars de cada instalación. Lo nuevo nace `coppia`; lo que lee una máquina instalada se
+  respeta.
 
 ### concepts
 - [[fallas-silenciosas]] — el patrón que más veces apareció: mecanismos que parecen proteger
