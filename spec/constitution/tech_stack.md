@@ -1,9 +1,9 @@
 ---
 project: copp-ia
 type: tech-stack
-provenance: copp-ia@desarrollo@15185e9
+provenance: copp-ia@desarrollo@ef0a5e3
 fuente: pyproject.toml, docker-compose.yml, helm/teleflow/, review-ui/package.json
-updated: 2026-09-13
+updated: 2026-09-18
 ---
 
 # Stack tecnico
@@ -37,7 +37,12 @@ esto necesita un ADR.
 
 ## Servicios
 
-| Servicio | Puerto | Responsabilidad |
+Los puertos de la tabla son **internos del contenedor**. Al host el compose publica solo
+`api-gateway` (8000), `review-ui` (3100→80), rabbitmq-mgmt (15672), Prometheus y Grafana: los
+8001-8005 **no son alcanzables desde afuera**, que es lo que hace del gateway el unico punto de
+entrada de verdad y no solo por convencion.
+
+| Servicio | Puerto interno | Responsabilidad |
 |---|---|---|
 | `api-gateway` | 8000 | Unico punto de entrada. Auth `X-TeleFlow-API-Key`, rate limit, routing |
 | `parser-service` | 8001 | Lark LALR → AST JSON, validacion sintactica y semantica |
@@ -45,7 +50,7 @@ esto necesita un ADR.
 | `registry-service` | 8003 | Versionado inmutable de flows, pointer `latest` mutable |
 | `composer-service` | 8004 | Abstraccion LLM (ADR-003), borradores `.tflow` |
 | `metrics-service` | 8005 | Gauges de negocio. **Una sola replica, por diseño** (`test_metrics_service_contract.py`) |
-| `review-ui` | 3100 | UI React de revision PR-style |
+| `review-ui` | 80 (publicado en 3100) | UI React de revision PR-style |
 
 Los 6 servicios Python comparten **una sola imagen Docker**; el servicio se elige con
 `command: uvicorn teleflow.<svc>.main:app`.
@@ -79,8 +84,9 @@ Solo `review-ui/`: React 18 + Vite 5, tests con Playwright (`npm ci`, `npm test`
 
 ## Infraestructura
 
-- **Datos**: Postgres 5432, Redis 6379, RabbitMQ 5672 (cluster de 3 con quorum queues en el
-  chart). Camino externo de primera clase: `external<Comp>.existingSecret`.
+- **Datos**: Postgres 5432, Redis 6379, RabbitMQ 5672 — los tres **solo internos**, el compose no
+  los publica; al host sale unicamente la consola de RabbitMQ en 15672. Cluster de 3 con quorum
+  queues en el chart. Camino externo de primera clase: `external<Comp>.existingSecret`.
 - **Observabilidad**: Prometheus 9090, Grafana 3001 (no 3000: suele estar ocupado). Alertas en
   `helm/teleflow/alerts/alerts.yml`, **una sola fuente** para el compose y el chart.
 - **Deploy**: `docker-compose.yml` para desarrollo/staging, Helm (`helm/teleflow/`) para k8s.
@@ -89,7 +95,8 @@ Solo `review-ui/`: React 18 + Vite 5, tests con Playwright (`npm ci`, `npm test`
 
 ## CI
 
-`.github/workflows/ci.yml` — push a `desarrollo`/`devyos`, PR a `desarrollo`. Jobs: `quality`
+`.github/workflows/ci.yml` — push a `desarrollo`, PR a `desarrollo`. Las ramas de chunk se cubren
+por el PR y no por el push: listar cada rama era imposible y duplicaba la corrida. Jobs: `quality`
 (mypy strict + pytest no-e2e), `e2e` (stack en compose + promtool + Playwright), `docker-build`,
 `chart` (bateria de `helm template` con asserts sobre secrets, HPA y capa de datos externa).
 
